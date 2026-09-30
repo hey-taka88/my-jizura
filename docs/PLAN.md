@@ -53,7 +53,8 @@ Phase 1〜3 の直後の候補は [docs/IDEAS.md](IDEAS.md) の G 節と「お�
 ### 0.4 このリポジトリの状態（Phase 0 完了）
 
 - `upstream/main`（852wa/JIZURA）を履歴ごとマージ済み。以後は `git fetch upstream && git merge upstream/main` で追従する。
-- 本家の Search Console 用ファイルは削除。`sitemap.xml` と `app/i18n.py` の `BASE` は本家 URL のまま（Phase 0.5 で直す）。
+- 本家の Search Console 用ファイルは削除。
+- リポジトリは公開（Public）にし、GitHub Pages（`main` / root）で `https://hey-taka88.github.io/my-jizura/` から配信する（2026-09-30 決定。スマホでも使うため）。`app/i18n.py` の `BASE` もこの URL（Phase 0.5）。
 
 ---
 
@@ -240,9 +241,11 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 
 ### Phase 0.5 — 開発環境と公開先（Sonnet・小）
 
-- [ ] `app/i18n.py` の `BASE` を自分の Pages URL（`https://hey-taka88.github.io/my-jizura/`）に変更し、`python3 build.py` で `sitemap.xml`・canonical を更新。README の「自分のリポジトリで公開する」に従い Pages を有効化
-- [ ] `dev/requirements.txt`（playwright, Pillow）と、`python3 -m playwright install chromium` の手順を CLAUDE.md に追記。`dev/smoke_all.py t_all` が通ることを確認（ベースライン）
-- [ ] `CHANGELOG.md` の先頭に「フォーク（my-jizura）」節を作り、以後フォーク側の変更はそこに書く（本家の節は触らない）
+- [x] `app/i18n.py` の `BASE` を自分の Pages URL（`https://hey-taka88.github.io/my-jizura/`）に変更し、`python3 build.py` で `sitemap.xml`・canonical を更新
+- [ ] Settings → Pages で `main` / `/ (root)` を配信元にする（リポジトリ所有者が手で行う。エージェントからは設定できない）
+- [x] `dev/requirements.txt`（playwright, Pillow）と、`python3 -m playwright install chromium` の手順を CLAUDE.md に追記。`dev/smoke_all.py t_all` が通ることを確認（ベースライン：860 部品、problems 0、page errors なし。`node dev/ae_test.js` も problems 0）
+- [x] Claude Code on the web 用の SessionStart フック（`.claude/hooks/session-start.sh`）で、上記の Python パッケージと `dev/` の npm パッケージを自動で入れる
+- [x] `CHANGELOG.md` の先頭に「フォーク（my-jizura）」節を作り、以後フォーク側の変更はそこに書く（本家の節は触らない）
 - 受け入れ：`python3 build.py` が成功、ページの canonical が自分の URL、smoke が「problems: 0」
 
 ### Phase 1 — 静止画の背景（MVP）（Sonnet 実装 / Opus レビュー）

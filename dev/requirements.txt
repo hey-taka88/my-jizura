@@ -1,0 +1,6 @@
+# Python packages for the test tools in dev/ (smoke_all.py, pack_sheet.py, overview.py, cost_scan.py, cep_test.py)
+# playwright is pinned to the release whose Chromium build (1194) is preinstalled in Claude Code on the web
+# containers (/opt/pw-browsers), so no browser download is needed there. On your own PC, any playwright
+# version works after `python3 -m playwright install chromium`.
+playwright==1.56.0
+Pillow
