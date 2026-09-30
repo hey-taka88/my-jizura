@@ -44,6 +44,12 @@
 - **hirazisora フォークをそのまま自分用にする**：今すぐ全部使えるのが利点。本家の新機能を諦められるなら最速。「まず触ってみて、欲しい体験を確かめる」用途には今でも使える（https://hirazisora.github.io/JIZURA/）。
 - **本家に PR する**：本家の方針（文字だけ）と合わないので採らない。
 
+### 0.3.1 主用途（2026-09-30 確認）
+
+**AI で作った自作曲（Suno / Udio など）に、AI 生成の画像・動画クリップを付けて MV にする。** これを前提に、
+Phase 2 には「短いクリップ（5〜10 秒）を曲の長さまで伸ばす」要件（ループ・ピンポン・拍での頭出し）を含め、
+Phase 1〜3 の直後の候補は [docs/IDEAS.md](IDEAS.md) の G 節と「おすすめの順番」に従う。歌詞タイミングの取り込み（LRC/Whisper）は Phase 1 と並行して進めてよい。
+
 ### 0.4 このリポジトリの状態（Phase 0 完了）
 
 - `upstream/main`（852wa/JIZURA）を履歴ごとマージ済み。以後は `git fetch upstream && git merge upstream/main` で追従する。
@@ -262,15 +268,20 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 7. **テスト**：`dev/test.html` の `T` に `T.addMediaFixture()`（1×1 の色付き画像を data URL で登録）を足し、smoke に「メディアあり」の組み合わせを 1 セット追加。`python3 tools/check_page_js.py index.html`
 - 受け入れ：写真 5 枚を落として「一括配置」→ 行ごとに背景が切り替わる MP4 が書き出せる。素材はリロード後も残る。プロジェクト JSON に素材の実体が入らない。keyBg ON のときは描かれない。既存の smoke が壊れない
 
+### Phase 1.5 — 歌詞タイミングの取り込み（Phase 1 と並行可・Sonnet・小）
+
+- [ ] LRC 読み込み（本家 v0.10）を拡張し、SRT / VTT / Whisper の JSON（`segments[].words[]` の word timestamps）を読めるようにする。Suno のタイムスタンプ付き歌詞（LRC または JSON）も対象。行の開始時刻は `timing.lineTimes` に、語の時刻は将来の B4 用に `overrides[i].words` に保存（今は使わない）
+- 受け入れ：Whisper の JSON を落とすと、タップ同期なしで行が合う。既存の LRC 読み込みの挙動は変わらない
+
 ### Phase 2 — 動画（Sonnet 実装 / Opus レビュー。難所は Opus が設計）
 
 1. `addFiles` で動画を受け付ける：`<video muted playsinline preload="auto">` + `loadedmetadata` で `w,h,duration`。`canPlayType` で不可なら案内。サムネは 1 秒目を canvas に描く
 2. プレビュー同期 `J.media.syncPreview(plan, t, playing)`：§2.4 の playbackRate 吸収。`12_ui.js` の `tick()` から 1 行呼ぶ。停止・スクラブは seek
 3. 書き出し `J.media.prepareFrame(plan, t, signal)`：`seeked` + `requestVideoFrameCallback` 待ち。`encodeMP4` / `exportPNGZip` のループ先頭に `await` を 1 行。進捗に「動画のフレーム待ち」を出す
-4. カット設定：`video.start`（素材のどこから）・`loop`・`rate`。`end` が素材より長いときはループ or 最終フレーム保持
+4. カット設定：`video.start`（素材のどこから）・`loop`・`rate`。`end` が素材より長いときの伸ばし方を選べる：`extend: 'loop' | 'pingpong' | 'hold' | 'beat'`（`beat` = 小節（または N 拍）ごとに `video.start` へ頭出し。AI 生成の 5〜10 秒クリップを曲の長さまで使うための要件）。ループの継ぎ目は短いクロスフェード（0.2〜0.4 秒）で隠す
 5. メモリ管理：同時に `src` を持つ video は「今のカット＋次のカット」だけ。それ以外は解放
 6. 動画ファイルを「曲として読み込む」で音声だけ取り出せるようにする（`loadAudioFile` の accept に video を足す。`decodeAudioData` はそのまま）
-- 受け入れ：1080p30 の MP4 を 2 本置き、24fps / 30fps の両方で書き出したときに**フレームの取りこぼし・重複が無い**（書き出し MP4 を `ffprobe -show_frames` などで確認、または画面に時刻を焼き込んだテスト動画で目視）。プレビューでカクつかない（1080p で 24fps 維持）。iPad Safari でクラッシュしない（素材 2 本まで）
+- 受け入れ：8 秒の AI 生成クリップ 1 本を 3 分の曲全体に `pingpong` と `beat` で敷いて破綻しない。1080p30 の MP4 を 2 本置き、24fps / 30fps の両方で書き出したときに**フレームの取りこぼし・重複が無い**（書き出し MP4 を `ffprobe -show_frames` などで確認、または画面に時刻を焼き込んだテスト動画で目視）。プレビューでカクつかない（1080p で 24fps 維持）。iPad Safari でクラッシュしない（素材 2 本まで）
 
 ### Phase 3 — 前景レイヤー・クロマキー・演出（Opus 設計 / Sonnet 実装）
 
