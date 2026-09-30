@@ -33,12 +33,18 @@ python3 tools/check_page_js.py index.html         # ビルド後ページの構�
 node -e "new Function(require('fs').readFileSync('src/08m_media_store.js','utf8'))"   # 単ファイルの構文チェック
 python3 dev/build_test.py all --all-packs         # テスト用バンドル dev/www/t_all.html
 (cd dev/www && python3 -m http.server 8765 &)     # テストページの配信（playwright 系ツールが使う）
-python3 dev/smoke_all.py t_all                    # 全部品を多数の組み合わせで描画。problems: 0 が合格（要 pip install playwright pillow && python3 -m playwright install chromium）
+python3 dev/smoke_all.py t_all                    # 全部品を多数の組み合わせで描画。problems 0 と page errors [] が合格
 python3 dev/cost_scan.py t_all 45                 # 45ms を超えるフレームの一覧
 node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触ったときだけ
 ```
 
-`dev/www/` と `__pycache__/` はコミットしない（`.gitignore` 済み／確認する）。
+`dev/www/`・`dev/node_modules/`・`out/`・`__pycache__/` はコミットしない（`.gitignore` 済み）。
+
+### テスト環境の用意
+
+- **Claude Code on the web**：SessionStart フック（`.claude/hooks/session-start.sh`）が `dev/requirements.txt` と `dev/` の npm パッケージを自動で入れる。`playwright install` は実行しない（コンテナに Chromium build 1194 が入っていて、`dev/requirements.txt` の playwright はそれに合わせて 1.56.0 に固定してある）。
+- **自分の PC**：`pip install -r dev/requirements.txt && python3 -m playwright install chromium`、AE パネルのテストをするなら `(cd dev && npm install)`。
+- **ベースライン（2026-09-30、upstream v0.10.0）**：`dev/smoke_all.py t_all` は 860 部品で problems 0、page errors []。`node dev/ae_test.js` は problems 0。smoke の「slow frames」は GPU のないクラウドのコンテナで 250 前後出るのが普通なので、合否には使わない（増え方が大きいときだけ `dev/cost_scan.py` で調べる）。
 
 ## 守ること（本家の掟 + フォークの掟）
 

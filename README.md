@@ -1,5 +1,6 @@
 > **このリポジトリは [852wa/JIZURA](https://github.com/852wa/JIZURA)（MIT）を自分用に改造するためのフォークです。**
 > 目的は「文字PVに画像・動画も入れられるようにする」こと。計画は [docs/PLAN.md](docs/PLAN.md)、機能アイデアは [docs/IDEAS.md](docs/IDEAS.md)、AI エージェント（Claude Code）向けの作業ルールは [CLAUDE.md](CLAUDE.md) にあります。
+> **このフォークのアプリ：<https://hey-taka88.github.io/my-jizura/>**（GitHub Pages）
 > 以下は upstream v0.10.0 の README をそのまま残したものです（URL は本家のものです）。
 
 # JIZURA 字面 — 文字PV自動構成ツール
