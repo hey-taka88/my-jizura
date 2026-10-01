@@ -14,13 +14,14 @@ async () => {
   const styles = J.STYLE_ORDER;
   const cv = document.createElement('canvas'); const ctx = cv.getContext('2d');
   const r = new J.Renderer();
-  const run = (label, ovs, aspect, style, n = 7) => {
+  const run = (label, ovs, aspect, style, n = 7, extra = null) => {
     cur = label;
     const lines = ovs.map((o, i) => texts[i % texts.length]);
     const p = Object.assign(J.defaultProject(), { extra: true, lyrics: lines.join('\n'), style, aspect, seed: 1 + (label.length * 7919) % 99991,
       overrides: Object.fromEntries(ovs.map((o, i) => [i, Object.assign({ single: true }, o)])),
       timing: { bpm: 0, offset: 0, snap: false, tail: 0.5, lineTimes: Object.fromEntries(lines.map((_, i) => [i, i * 2.4])), lineScale: 1 } });
     p.fx = Object.assign(J.defaultProject().fx, { hud: 'on', glitch: 0.8, decor: 0.9 });
+    if (extra) Object.assign(p, extra);
     let plan;
     try { plan = J.plan(p, { beats: Array.from({ length: 60 }, (_, i) => i * 0.5), duration: 30, energy: Array.from({ length: 300 }, (_, i) => 0.5 + 0.5 * Math.sin(i / 3)), energyRate: 10 }); }
     catch (e) { out.problems.push(label + ' :: PLAN ' + e.message); return; }
@@ -45,6 +46,16 @@ async () => {
   for (const k of G('cam')) run('cam.' + k, texts.map((_, i) => ({ cam: k })), aspects[k.length % 6], 'hud', 5);
   for (const k of G('trans')) run('trans.' + k, texts.map((_, i) => (i ? { trans: k } : {})), aspects[k.length % 6], styles[k.length % styles.length], 8);
   for (const k of J.STYLE_ORDER) run('style.' + k, texts.map(() => ({})), aspects[k.length % 6], k, 5);
+  // my-jizura: background pictures in every aspect (both fits / motions, picture changed per line or set to none), and the key-colour output
+  if (J.media && T.addMediaFixture) {
+    const mids = T.addMediaFixture(3);
+    const mediaP = (fit, hold, extra) => Object.assign({ media: J.media.normalize({ assets: mids.map(id => ({ id, name: id, type: 'image', w: 1600, h: 900 })), autoFill: { back: { mode: 'perLine', fit, hold } },
+      tracks: { back: { cuts: [{ lineRef: { line: 1 }, assetId: '' }, { lineRef: { line: 3 }, assetId: mids[2] }], dim: 0.3 } } }) }, extra || {});
+    aspects.forEach((a, i) => run('media.' + a, texts.map(() => ({})), a, styles[i % styles.length], 6, mediaP(i % 2 ? 'contain' : 'cover', i % 3 ? 'kenburns' : 'still')));
+    const over = mediaP('cover', 'kenburns'); over.media.lyricBg = 'over';
+    run('media.over', texts.map(() => ({ bg: 'meshBlobs' })), '16:9', 'noir', 4, over);
+    run('media.key', texts.map(() => ({})), '16:9', 'noir', 4, mediaP('cover', 'kenburns', { keyBg: 'green' }));
+  }
   // random full plans with everything on
   for (let s = 0; s < 30; s++) run('random#' + s, texts.map(() => ({})), aspects[s % 6], styles[s % styles.length], 6);
   console.warn = warn; console.error = err;

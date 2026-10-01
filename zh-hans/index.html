@@ -3468,6 +3468,7 @@ J.defaultProject = () => ({
   locks: { tech: {}, params: {} },   // groups and values Randomize / Shuffle must not change (UI side only)
   colors: { enabled: false },
   fonts: {},
+  media: J.media ? J.media.defaults() : undefined,   // my-jizura: pictures layer (src/08m_media_*.js)
 });
 
 /* the original (After Effects-implemented) sets, captured before any expression pack registers */
@@ -4036,6 +4037,7 @@ J.plan = (project, audio) => {
   plan.events.sort((a, b) => a.t - b.t);
   plan.energy = audio && audio.energy ? audio.energy : null;
   plan.energyRate = audio && audio.energyRate ? audio.energyRate : 0;
+  if (J.media) plan.media = J.media.resolve(project, plan);   // my-jizura: pictures layer
   return plan;
 };
 
@@ -4606,6 +4608,423 @@ J.omakase = (project, rnd = Math.random, themeId = null) => {
 })();
 
 /* ============================================================
+   my-jizura (fork) — media layer: drawing
+   J.media.drawTrack(ctx, plan, t, track, o) draws the pictures of one track in design space (ctx already scaled by o.scale).
+   Called from J.Renderer.frame(): 'back' right after the background colour, 'front' after the HUD.
+   Pictures that are not loaded (yet) are skipped; nothing here throws into the renderer.
+   ============================================================ */
+(() => {
+'use strict';
+const M = (J.media = J.media || {});
+const BLEND = { normal: 'source-over', multiply: 'multiply', screen: 'screen', overlay: 'overlay' };
+const ease = x => 0.5 - 0.5 * Math.cos(Math.PI * J.clamp(x));
+const NEAR = 0.06;
+
+/* one cut at time t with opacity a */
+function drawCut(ctx, c, t, W, H, a, scale) {
+  const asset = J.mediaAssets.get(c.assetId);
+  if (!asset || !asset.source || a <= 0.001) return false;
+  const sw = asset.w, sh = asset.h;
+  const base = c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
+  let z = 1, px = 0, py = 0;
+  if (c.hold === 'kenburns' && c.kb) {
+    const p = ease((t - c.start) / Math.max(0.1, c.dur));
+    z = J.lerp(c.kb.s0, c.kb.s1, p); px = J.lerp(c.kb.x0, c.kb.x1, p) * W; py = J.lerp(c.kb.y0, c.kb.y1, p) * H;
+  }
+  const dw = sw * base * z, dh = sh * base * z;
+  if (c.fit !== 'contain') {               // a filled frame never shows its edge while drifting
+    const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);
+    px = J.clamp(px, -mx, mx); py = J.clamp(py, -my, my);
+  }
+  // the size bucket depends on the cut's largest size, not on this frame's zoom (no new copy while zooming)
+  const zMax = c.kb ? Math.max(c.kb.s0, c.kb.s1) : 1;
+  const src = M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
+  if (!src) return false;
+  // the copy is already close to the drawn size (made once with high quality), so plain bilinear is enough per frame;
+  // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
+  const step = Math.max(src.width / (dw * scale), src.height / (dh * scale));
+  ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
+  ctx.globalAlpha = a;
+  ctx.drawImage(src, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh);
+  return true;
+}
+
+M.drawTrack = (ctx, plan, t, track, o = {}) => {
+  const P = plan && plan.media && plan.media[track];
+  if (!P || !P.cuts.length) return;
+  const c = M.cutAt(plan, t, track);
+  if (!c) return;
+  const W = plan.W, H = plan.H, scale = o.scale || 1;
+  ctx.save();
+  try {
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalCompositeOperation = BLEND[P.blend] || 'source-over';
+    const lt = t - c.start;
+    let a = c.opacity, under = 0;
+    if (c.enter === 'fade' && c.inDur > 0 && lt < c.inDur) {
+      const k = ease(lt / c.inDur);
+      // cross-fade: the picture before keeps moving underneath while this one appears
+      const prev = c.index > 0 ? P.cuts[c.index - 1] : null;
+      if (prev && Math.abs(prev.end - c.start) < NEAR && drawCut(ctx, prev, t, W, H, P.opacity * prev.opacity, scale)) under = 1;
+      a *= k;
+    }
+    if (c.exit === 'fade' && c.outDur > 0 && c.end - t < c.outDur) a *= ease((c.end - t) / c.outDur);
+    const drawn = drawCut(ctx, c, t, W, H, P.opacity * a, scale);
+    // 暗さ: a dark veil over the pictures so the lyrics stay readable (follows the pictures in and out)
+    const seen = Math.max(under, drawn ? a / Math.max(0.001, c.opacity) : 0);
+    if (P.dim > 0 && seen > 0) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = P.dim * Math.min(1, seen);
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    }
+  } catch (e) { console.warn('media', track, e); }
+  finally { ctx.restore(); }
+};
+
+/* the lyric background graphic (J.BG) is left out where a background picture shows, unless 「重ねる」 is on */
+M.hidesBg = (plan, t) => {
+  if (!plan || !plan.media || plan.media.lyricBg === 'over') return false;
+  const c = M.cutAt(plan, t, 'back');
+  return !!(c && J.mediaAssets.has(c.assetId));
+};
+})();
+
+/* ============================================================
+   my-jizura (fork) — media layer: project.media schema + validation
+   project.media holds metadata only; the image bytes live in IndexedDB ('files' / 'media:<id>', see 08m_media_store.js).
+   Project files are untrusted: everything read from them goes through J.media.normalize().
+   ============================================================ */
+(() => {
+'use strict';
+const M = (J.media = J.media || {});
+
+M.ID = /^[\w-]{1,32}$/;
+M.TRACKS = ['back', 'front'];
+M.TYPES = ['image', 'video'];             // 'video' is accepted now so Phase 2 projects open here; only images are drawn yet
+M.FIT = ['cover', 'contain'];
+M.ENTER = ['auto', 'cut', 'fade'];
+M.HOLD = ['auto', 'still', 'kenburns'];
+M.EXIT = ['auto', 'cut', 'fade'];
+M.BLEND = ['normal', 'multiply', 'screen', 'overlay'];
+M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.BG) where a background image shows
+M.AUTO = ['off', 'perLine'];
+M.ORDER = ['sequential', 'random'];
+M.MAX_ASSETS = 500;
+M.MAX_CUTS = 2000;
+
+M.defaults = () => ({
+  version: 1,
+  assets: [],
+  tracks: {
+    back: { cuts: [], opacity: 1, blend: 'normal', dim: 0.25 },
+    front: { cuts: [], opacity: 1, blend: 'normal', dim: 0 },
+  },
+  autoFill: {
+    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns' },
+    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still' },
+  },
+  lyricBg: 'off',
+});
+
+const num = (v, lo, hi, d) => { const n = +v; return Number.isFinite(n) ? J.clamp(n, lo, hi) : d; };
+const int = (v, lo, hi, d) => { const n = Math.round(+v); return Number.isFinite(n) ? J.clamp(n, lo, hi) : d; };
+const pick = (v, list, d) => (list.includes(v) ? v : d);
+const str = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, '').slice(0, n);
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function asset(a) {
+  if (!isObj(a) || !M.ID.test(a.id) || !M.TYPES.includes(a.type)) return null;
+  const o = { id: a.id, name: str(a.name, 160) || a.id, type: a.type, w: int(a.w, 1, 32768, 1), h: int(a.h, 1, 32768, 1), size: int(a.size, 0, 2 ** 40, 0) };
+  if (a.type === 'video') o.duration = num(a.duration, 0, 86400, 0);
+  return o;
+}
+function cut(c, i) {
+  if (!isObj(c)) return null;
+  const lineRef = isObj(c.lineRef) && Number.isInteger(+c.lineRef.line) && +c.lineRef.line >= 0 ? { line: Math.min(+c.lineRef.line, 99999) } : null;
+  const start = c.start == null ? null : num(c.start, 0, 86400, null);
+  if (!lineRef && start == null) return null;                       // a cut is tied to a lyric line or to a time
+  const o = {
+    id: M.ID.test(c.id) ? c.id : 'c' + i,
+    assetId: c.assetId === '' ? '' : (M.ID.test(c.assetId) ? c.assetId : ''),   // '' = no image here
+    lineRef, start, end: c.end == null ? null : num(c.end, 0, 86400, null),
+    fit: pick(c.fit, M.FIT.concat(['auto']), 'auto'),
+    enter: pick(c.enter, M.ENTER, 'auto'), hold: pick(c.hold, M.HOLD, 'auto'), exit: pick(c.exit, M.EXIT, 'auto'),
+    opacity: num(c.opacity, 0, 1, 1),
+  };
+  if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
+  return o;
+}
+function track(t, d) {
+  t = isObj(t) ? t : {};
+  return {
+    cuts: (Array.isArray(t.cuts) ? t.cuts : []).slice(0, M.MAX_CUTS).map((c, i) => cut(c, i)).filter(Boolean),
+    opacity: num(t.opacity, 0, 1, d.opacity), blend: pick(t.blend, M.BLEND, d.blend), dim: num(t.dim, 0, 0.9, d.dim),
+  };
+}
+function auto(a, d) {
+  a = isObj(a) ? a : {};
+  return { mode: pick(a.mode, M.AUTO, d.mode), order: pick(a.order, M.ORDER, d.order), seed: int(a.seed, 0, 2 ** 31 - 1, d.seed),
+    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold) };
+}
+
+/* untrusted input → a complete, valid project.media */
+M.normalize = m => {
+  const d = M.defaults();
+  if (!isObj(m)) return d;
+  const seen = new Set(), assets = [];
+  for (const a of (Array.isArray(m.assets) ? m.assets : []).slice(0, M.MAX_ASSETS)) { const o = asset(a); if (o && !seen.has(o.id)) { seen.add(o.id); assets.push(o); } }
+  const tr = isObj(m.tracks) ? m.tracks : {}, af = isObj(m.autoFill) ? m.autoFill : {};
+  const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg) };
+  for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
+  // a cut may only point at an asset of this project ('' = deliberately none); cuts of a picture that is gone are dropped
+  for (const k of M.TRACKS) out.tracks[k].cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
+  return out;
+};
+
+M.assetById = (project, id) => ((project && project.media && project.media.assets) || []).find(a => a.id === id) || null;
+})();
+
+/* ============================================================
+   my-jizura (fork) — media layer: project.media → plan.media
+   Deterministic: the same project + lyrics timing always gives the same media cuts.
+   plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
+   cut = { index, assetId, start, end, dur, line, fit, enter, hold, exit, inDur, outDur, opacity, seed, kb }
+   ============================================================ */
+(() => {
+'use strict';
+const M = (J.media = J.media || {});
+const NEAR = 0.06;                         // two cuts closer than this touch (same rule as the lyric transitions)
+
+// the n-th image of the automatic sequence: in the order added, or shuffled once per round (seeded), never the same twice in a row
+function sequence(ids, A) {
+  const perms = [];
+  const perm = round => {
+    if (perms[round]) return perms[round];
+    const p = ids.slice();
+    if (A.order === 'random' && p.length > 1) {
+      const r = J.rng(J.h(A.seed, round, 0x6d65));
+      for (let i = p.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; }
+      const prev = round > 0 ? perm(round - 1) : null;
+      if (prev && p[0] === prev[prev.length - 1]) [p[0], p[1]] = [p[1], p[0]];
+    }
+    return (perms[round] = p);
+  };
+  return n => perm(Math.floor(n / ids.length))[n % ids.length];
+}
+
+function resolveTrack(m, k, plan) {
+  const T = m.tracks[k], A = m.autoFill[k], D = Math.max(0.1, plan.duration || 0);
+  const ids = m.assets.map(a => a.id);
+  const known = new Set(ids);
+  const out = { cuts: [], opacity: T.opacity, blend: T.blend, dim: T.dim };
+  const byLine = new Map(), timed = [];
+  for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
+  const next = ids.length ? sequence(ids, A) : null;
+  const lines = (plan.lines || []).slice().sort((a, b) => a.start - b.start);
+  let segs = [], n = 0;
+  if (!lines.length) {
+    if (A.mode === 'perLine' && next) segs.push({ assetId: next(0), start: 0, end: D, line: -1, src: null });
+  } else {
+    lines.forEach((ln, j) => {
+      const start = j === 0 ? 0 : ln.start;                 // the first image also covers the intro / title card
+      const end = j + 1 < lines.length ? lines[j + 1].start : D;
+      if (!(end - start > 0.02)) return;
+      const ov = byLine.get(ln.index);
+      let id = null;
+      if (ov) id = ov.assetId && known.has(ov.assetId) ? ov.assetId : null;     // a line set to 「なし」 stays empty
+      else if (A.mode === 'perLine' && next) id = next(n++);
+      if (id) segs.push({ assetId: id, start, end, line: ln.index, src: ov || null });
+    });
+  }
+  // cuts placed at a time (no editor for them yet): end = the next cut's start
+  for (const c of timed) if (c.assetId && known.has(c.assetId) && c.start < D) segs.push({ assetId: c.assetId, start: c.start, end: c.end, line: -1, src: c });
+  segs.sort((a, b) => a.start - b.start);
+  segs.forEach((s, i) => { if (s.end == null) s.end = i + 1 < segs.length ? segs[i + 1].start : D; s.end = Math.min(s.end, D); });
+  segs = segs.filter(s => s.end - s.start > 0.02);
+  // one automatic image over several lines in a row stays one cut (its slow move does not restart)
+  const merged = [];
+  for (const s of segs) {
+    const p = merged[merged.length - 1];
+    if (p && !p.src && !s.src && p.assetId === s.assetId && Math.abs(p.end - s.start) < NEAR) p.end = s.end;
+    else merged.push(s);
+  }
+  merged.forEach((s, i) => {
+    const src = s.src, nxt = merged[i + 1];
+    const dur = s.end - s.start;
+    const own = (key, dflt) => (src && src[key] && src[key] !== 'auto' ? src[key] : dflt);
+    const seed = src && src.seed != null ? src.seed : J.h(A.seed, J.sid(s.assetId), Math.round(s.start * 100));
+    const enter = own('enter', 'fade');
+    const exit = own('exit', nxt && Math.abs(nxt.start - s.end) < NEAR ? 'cut' : 'fade');   // the next image fades in over this one
+    const r = J.rng(J.h(seed, 0x6b62));
+    const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
+    out.cuts.push({
+      index: i, assetId: s.assetId, start: s.start, end: s.end, dur, line: s.line,
+      fit: own('fit', A.fit), enter, hold: own('hold', A.hold), exit,
+      inDur: enter === 'fade' ? Math.min(0.6, dur * 0.3) : 0,
+      outDur: exit === 'fade' ? Math.min(0.45, dur * 0.25) : 0,
+      opacity: src ? src.opacity : 1, seed,
+      // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
+      kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
+    });
+  });
+  return out;
+}
+
+M.resolve = (project, plan) => {
+  if (!project || !project.media) return null;
+  const m = M.normalize(project.media);          // cheap, and plans built from test / preview projects get the same checks
+  const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off' };
+  for (const k of M.TRACKS) out[k] = resolveTrack(m, k, plan);
+  return out;
+};
+
+/* the media cut showing at time t on a track (binary search, like J.cutAt) */
+M.cutAt = (plan, t, track = 'back') => {
+  const cs = plan && plan.media && plan.media[track] && plan.media[track].cuts;
+  if (!cs || !cs.length) return null;
+  let lo = 0, hi = cs.length - 1, ans = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (cs[mid].start <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (ans < 0) return null;
+  const c = cs[ans];
+  return t < c.end ? c : null;
+};
+})();
+
+/* ============================================================
+   my-jizura (fork) — media layer: image store
+   · the original bytes of every image are kept in this browser (IndexedDB 'jizura' / 'files' / 'media:<id>'),
+     never in the project JSON or localStorage
+   · decoded pictures live in J.mediaAssets (id → { id, type, name, w, h, source, scaled })
+   · id = the first 12 hex digits of the file's SHA-256, so dropping the same picture twice keeps one copy
+   ============================================================ */
+(() => {
+'use strict';
+const M = (J.media = J.media || {});
+J.mediaAssets = J.mediaAssets || new Map();
+const MAX_EDGE = 4096;                     // decoded size cap (4K output + a little room for the slow zoom)
+const IMG_EXT = /\.(png|jpe?g|webp|gif|bmp|avif)$/i;
+
+/* ---------- IndexedDB (same database / store as the song and imported fonts in 10_audio.js) ---------- */
+let dbp = null;
+const db = () => dbp || (dbp = new Promise((res, rej) => {
+  if (typeof indexedDB === 'undefined') return rej(new Error('no IndexedDB'));
+  const r = indexedDB.open('jizura', 1);
+  r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files'); };
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+}));
+const tx = async (mode, fn) => {
+  const d = await db();
+  return new Promise((res, rej) => { const t = d.transaction('files', mode); const q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); });
+};
+const idbPut = (id, rec) => tx('readwrite', s => s.put(rec, 'media:' + id));
+const idbGet = id => tx('readonly', s => s.get('media:' + id));
+const idbDel = id => tx('readwrite', s => s.delete('media:' + id));
+
+/* ---------- hashing ---------- */
+async function hashId(buf) {
+  try {
+    if (crypto && crypto.subtle) {
+      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+      return Array.from(d.slice(0, 6), b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (e) {}
+  // no WebCrypto (very old browsers): FNV-1a over the bytes + length
+  const u = new Uint8Array(buf); let h = 2166136261 >>> 0, g = 0x9e3779b9;
+  for (let i = 0; i < u.length; i++) { h = Math.imul(h ^ u[i], 16777619) >>> 0; if ((i & 1023) === 0) g = Math.imul(g ^ h, 2246822519) >>> 0; }
+  return (h.toString(16).padStart(8, '0') + (g ^ u.length).toString(16).padStart(8, '0')).slice(0, 12);
+}
+
+/* ---------- decoding ---------- */
+async function decode(blob) {
+  const bmp = await createImageBitmap(blob);
+  const w = bmp.width, h = bmp.height, k = Math.min(1, MAX_EDGE / Math.max(w, h));
+  if (k >= 1) return { source: bmp, w, h };
+  // very large pictures are scaled down once (keeps memory and every-frame drawing cheap)
+  const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+  const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(bmp, 0, 0, c.width, c.height);
+  try { bmp.close(); } catch (e) {}
+  return { source: c, w, h };
+}
+function keep(id, meta, dec) {
+  const old = J.mediaAssets.get(id);
+  if (old) release(old);
+  const a = { id, type: 'image', name: meta.name, w: dec.w, h: dec.h, source: dec.source, sw: dec.source.width, sh: dec.source.height, scaled: new Map() };
+  J.mediaAssets.set(id, a);
+  return a;
+}
+function release(a) { try { if (a.source && a.source.close) a.source.close(); } catch (e) {} a.scaled && a.scaled.clear(); }
+
+M.isImageFile = f => !!f && (/^image\//.test(f.type || '') || IMG_EXT.test(f.name || ''));
+
+/* add picture files → [{ id, name, type, w, h, size }] (already known pictures are returned as they are);
+   errors: [{ name, reason }] */
+M.addFiles = async (files, known = []) => {
+  const added = [], errors = [], ids = new Set(known.map(a => a.id));
+  for (const f of Array.from(files || [])) {
+    if (!M.isImageFile(f)) { errors.push({ name: f && f.name, reason: 'type' }); continue; }
+    try {
+      const buf = await f.arrayBuffer();
+      const id = await hashId(buf);
+      if (ids.has(id) && J.mediaAssets.has(id)) continue;
+      const type = f.type || 'image/*';
+      const dec = await decode(new Blob([buf], { type }));
+      const meta = { id, name: String(f.name || id).slice(0, 160), type: 'image', w: dec.w, h: dec.h, size: buf.byteLength };
+      keep(id, meta, dec);
+      let stored = true;
+      try { await idbPut(id, { name: meta.name, type, data: buf }); } catch (e) { stored = false; console.warn('media: could not keep', meta.name, e); }
+      if (!ids.has(id)) { ids.add(id); added.push(Object.assign(meta, stored ? {} : { unsaved: true })); }
+    } catch (e) {
+      console.warn('media: could not read', f && f.name, e);
+      errors.push({ name: f && f.name, reason: 'decode' });
+    }
+  }
+  return { added, errors };
+};
+
+/* load the pictures of a project from this browser → { loaded, missing: [names] } */
+M.restore = async project => {
+  const list = (project && project.media && project.media.assets) || [];
+  let loaded = 0; const missing = [];
+  for (const meta of list) {
+    if (J.mediaAssets.has(meta.id)) { loaded++; continue; }
+    try {
+      const rec = await idbGet(meta.id);
+      if (!rec || !rec.data) { missing.push(meta.name); continue; }
+      keep(meta.id, meta, await decode(new Blob([rec.data], { type: rec.type || '' })));
+      loaded++;
+    } catch (e) { console.warn('media: could not restore', meta.name, e); missing.push(meta.name); }
+  }
+  return { loaded, missing };
+};
+
+M.remove = async id => {
+  const a = J.mediaAssets.get(id);
+  if (a) { release(a); J.mediaAssets.delete(id); }
+  try { await idbDel(id); } catch (e) {}
+};
+
+/* a copy of the picture no larger than needed for (needW × needH) device pixels — made once per size bucket
+   (drawing a 4000px photo every frame for a 1280px preview is the slow part) */
+M.sourceFor = (a, needW, needH) => {
+  if (!a || !a.source) return null;
+  const k = Math.max(needW / a.sw, needH / a.sh);
+  if (!(k > 0) || k > 0.66) return a.source;
+  const bw = Math.min(a.sw, Math.ceil(a.sw * k / 256 + 0.5) * 256);
+  const key = bw;
+  let c = a.scaled.get(key);
+  if (c) return c;
+  c = document.createElement('canvas'); c.width = bw; c.height = Math.max(1, Math.round(a.sh * bw / a.sw));
+  const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(a.source, 0, 0, c.width, c.height);
+  if (a.scaled.size >= 3) a.scaled.delete(a.scaled.keys().next().value);
+  a.scaled.set(key, c);
+  return c;
+};
+
+/* tests / embedding: register a picture that is not stored (e.g. a generated canvas) */
+M.registerSource = (id, source, name = id) => keep(id, { name }, { source, w: source.width, h: source.height });
+})();
+
+/* ============================================================
    JIZURA — frame renderer: background, chroma passes, HUD, post FX
    ============================================================ */
 (() => {
@@ -4719,7 +5138,8 @@ class Renderer {
     // ---------- background graphic (per line) ----------
     // 透過PNG 前景／後景 (opt.layer): 'back' = background graphic + the decorations behind the lyrics, 'front' = the rest
     const layer = opt.transparent ? opt.layer || null : null;
-    if ((!opt.transparent || layer === 'back') && !key && mainCut && mainCut.bg && mainCut.bg !== 'none' && J.BG[mainCut.bg]) {
+    if (J.media && plan.media && !key && (!opt.transparent || layer === 'back')) J.media.drawTrack(ctx, plan, t, 'back', { scale, fast: opt.fast });   // my-jizura: background pictures
+    if ((!opt.transparent || layer === 'back') && !key && mainCut && mainCut.bg && mainCut.bg !== 'none' && J.BG[mainCut.bg] && !(J.media && J.media.hidesBg(plan, t))) {
       const env = this.makeEnv(ctx, plan, mainCut, sc, { pass: 'main', t: tq, lt: tq - mainCut.start, ltb: tq - mainCut.start, step, scale, allowFilter, energy, beat: beatInfo, bgOnly: true });
       ctx.save();
       try { J.BG[mainCut.bg].draw(env, mainCut.bgP || {}); } catch (e) { console.warn('bg', mainCut.bg, e); }
@@ -4820,6 +5240,7 @@ class Renderer {
       const env = this.makeEnv(ctx, plan, mainCut, sc, { pass: 'main', t: tq, lt: 0, ltb: 0, step, scale, allowFilter, energy, beat: beatInfo });
       J.drawHUD(env, plan);
     }
+    if (J.media && plan.media && !key && layer !== 'back') J.media.drawTrack(ctx, plan, t, 'front', { scale, fast: opt.fast });   // my-jizura: foreground pictures
     ctx.restore();
     // ---------- post ----------
     if (!opt.noPost) this.post(ctx, plan, t, tq, step, sc, scale, opt, allowFilter);
@@ -35806,6 +36227,244 @@ J.randomOk = (project, g, k) => {
 };
 })();
 
+/* ============================================================
+   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures)
+   · a 「画像・背景」 section above 「行とカット」 (built here, so app/body.html stays as upstream ships it)
+   · a picture selector on every lyric line, a strip for the pictures on the timeline
+   12_ui.js calls: J.mediaUI.init(api) in boot(), onPlan() at the end of replan(),
+                   lineRow(li, ln, i) for each row of the line list, drawLane(…) inside drawTimeline()
+   ============================================================ */
+(() => {
+'use strict';
+const M = J.media;
+if (!M) return;
+const JA = /^ja/.test(document.documentElement.lang || 'ja');
+const L = (ja, en) => (JA ? ja : en);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+const $ = id => document.getElementById(id);
+let api = null, S = null, lastProject = null, listKey = '', busy = false;
+
+const CSS = `
+.media-drop { border: 1px dashed var(--line2); border-radius: var(--r); padding: 10px; font-size: 12px; color: var(--muted); text-align: center; cursor: pointer; }
+.media-drop:hover, .media-drop.over { border-color: var(--amber); color: var(--text); background: rgba(245,165,12,0.06); }
+.media-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.media-list li { position: relative; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--raised); }
+.media-list canvas { display: block; width: 100%; aspect-ratio: 16 / 9; background: #0c0c0e; }
+.media-list .nm { display: block; font: 400 10px/1.3 var(--mono); color: var(--muted); padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.media-list .no { position: absolute; left: 3px; top: 3px; font: 600 10px/1 var(--mono); color: #fff; background: rgba(0,0,0,0.6); padding: 2px 4px; border-radius: 2px; }
+.media-list .acts { position: absolute; right: 2px; top: 2px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.media-list li:hover .acts, .media-list li:focus-within .acts, #app.is-mobile .media-list .acts { opacity: 1; }
+.media-list .acts button { padding: 1px 5px; font-size: 11px; line-height: 1.3; background: rgba(0,0,0,0.65); border-color: transparent; }
+.media-list li.missing canvas { opacity: 0.35; }
+.media-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.media-opts label.field { font-size: 11px; }
+.media-checks { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.media-checks label { display: inline-flex; gap: 6px; align-items: center; }
+.media-note { font-size: 11px; color: var(--muted); }
+.media-note.warn { color: var(--amber); }
+.ln .tools select.media-sel { max-width: 120px; }
+.ln .tools select.media-sel.is-forced { border-color: var(--cyan); }
+`;
+
+function section() {
+  const sec = document.createElement('div');
+  sec.className = 'sec media-sec'; sec.id = 'mediaSec';
+  sec.innerHTML = `
+    <div class="sec-h"><h2>${L('画像・背景', 'Pictures')}</h2><span class="sec-btns"><label class="file ghost small" title="${L('背景に使う画像を追加します（複数選べます）', 'Add pictures for the background (several at once)')}">${L('画像を追加', 'Add pictures')}<input id="mediaFiles" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.avif" multiple></label></span></div>
+    <div id="mediaDrop" class="media-drop" role="button" tabindex="0">${L('ここに画像をドロップ（複数可）。歌詞の行ごとに背景として切り替わります', 'Drop pictures here (several at once). They change with every lyric line.')}</div>
+    <ul id="mediaList" class="media-list" aria-label="${L('画像の一覧', 'Pictures')}"></ul>
+    <div id="mediaCtl">
+      <div class="media-checks">
+        <label><input type="checkbox" id="mediaAuto"> ${L('行ごとに自動で切り替える', 'Change with every line')}</label>
+        <label><input type="checkbox" id="mediaLyricBg"> ${L('背景グラフィックも重ねる', 'Also draw the background graphics')}</label>
+      </div>
+      <div class="media-opts" style="margin-top:8px">
+        <label class="field">${L('順番', 'Order')}<select id="mediaOrder"><option value="sequential">${L('追加した順', 'As added')}</option><option value="random">${L('ランダム', 'Random')}</option></select></label>
+        <label class="field">${L('動き', 'Motion')}<select id="mediaHold"><option value="kenburns">${L('ゆっくり動かす', 'Slow zoom / pan')}</option><option value="still">${L('止める', 'Still')}</option></select></label>
+        <label class="field">${L('写し方', 'Fit')}<select id="mediaFit"><option value="cover">${L('画面いっぱい', 'Fill the frame')}</option><option value="contain">${L('全体を表示', 'Show it whole')}</option></select></label>
+        <label class="field">${L('暗さ', 'Darken')} <span id="mediaDimVal" class="mono"></span><input id="mediaDim" type="range" min="0" max="0.8" step="0.05"></label>
+      </div>
+      <div class="row" style="margin-top:8px"><button id="mediaShuffle" class="ghost small" title="${L('ランダムの並びを作り直します', 'Shuffle the random order again')}">${L('並べ直す', 'Reshuffle')}</button></div>
+    </div>
+    <div id="mediaNote" class="media-note" aria-live="polite"></div>`;
+  return sec;
+}
+
+const media = () => S.project.media || (S.project.media = M.defaults());
+const back = () => media().tracks.back;
+const autoB = () => media().autoFill.back;
+function changed(msg) { api.replan(); if (msg) api.toast(msg); }
+function note(text, warn) { const n = $('mediaNote'); if (!n) return; n.textContent = text || ''; n.classList.toggle('warn', !!warn); }
+
+async function addFiles(fileList) {
+  const files = Array.from(fileList || []);          // a copy: the input's FileList is emptied right after the call
+  if (busy || !files.length) return;
+  busy = true; note(L('読み込み中…', 'Loading…'));
+  try {
+    const m = media();
+    const room = M.MAX_ASSETS - m.assets.length;
+    const list = files.filter(M.isImageFile).slice(0, Math.max(0, room));
+    const { added, errors } = await M.addFiles(list, m.assets);
+    const unsaved = added.filter(a => a.unsaved).length;
+    for (const a of added) { delete a.unsaved; m.assets.push(a); }
+    const skipped = files.length - list.length;
+    const msgs = [];
+    if (added.length) msgs.push(L(`${added.length} 枚追加しました`, `Added ${added.length}`));
+    if (errors.length || skipped) msgs.push(L(`${errors.length + skipped} 枚は読み込めませんでした（画像ではないか、HEIC などこのブラウザで開けない形式です）`, `${errors.length + skipped} could not be read (not a picture, or a format this browser cannot open, such as HEIC)`));
+    if (unsaved) msgs.push(L('このブラウザに保存できなかったので、再読み込みすると消えます', 'Could not be kept in this browser; they will be gone after a reload'));
+    note(msgs.join('。'), !!(errors.length || skipped || unsaved));
+    listKey = '';
+    changed(added.length ? L(`画像を ${added.length} 枚追加しました`, `Added ${added.length} picture(s)`) : null);
+  } catch (e) { console.warn(e); note(L('画像を読み込めませんでした', 'Could not read the pictures'), true); }
+  finally { busy = false; }
+}
+
+async function removeAsset(id) {
+  const m = media(), a = m.assets.find(x => x.id === id); if (!a) return;
+  if (!window.confirm(L(`「${a.name}」を外しますか？このブラウザに保存した画像データも消えます。`, `Remove "${a.name}"? Its copy kept in this browser is deleted too.`))) return;
+  m.assets = m.assets.filter(x => x.id !== id);
+  for (const k of M.TRACKS) m.tracks[k].cuts = m.tracks[k].cuts.filter(c => c.assetId !== id);   // those lines go back to 自動
+  await M.remove(id);
+  listKey = ''; changed(L('画像を外しました', 'Removed'));
+}
+function moveAsset(id, d) {
+  const A = media().assets, i = A.findIndex(x => x.id === id), j = i + d;
+  if (i < 0 || j < 0 || j >= A.length) return;
+  [A[i], A[j]] = [A[j], A[i]];
+  listKey = ''; changed();
+}
+
+function thumb(cv, a) {
+  const x = cv.getContext('2d'), w = cv.width, h = cv.height;
+  x.fillStyle = '#0c0c0e'; x.fillRect(0, 0, w, h);
+  if (!a || !a.source) return;
+  const k = Math.max(w / a.sw, h / a.sh), dw = a.sw * k, dh = a.sh * k;
+  x.imageSmoothingQuality = 'high'; x.drawImage(a.source, (w - dw) / 2, (h - dh) / 2, dw, dh);
+}
+function renderList() {
+  const ul = $('mediaList'); if (!ul) return;
+  const m = media();
+  const key = m.assets.map(a => a.id + (J.mediaAssets.has(a.id) ? '+' : '-')).join(',');
+  if (key === listKey) return;
+  listKey = key;
+  ul.innerHTML = '';
+  m.assets.forEach((meta, i) => {
+    const a = J.mediaAssets.get(meta.id);
+    const li = document.createElement('li'); li.className = a ? '' : 'missing';
+    li.title = a ? `${meta.name}（${meta.w}×${meta.h}）` : L(`${meta.name}：このブラウザに画像がありません。もう一度追加してください`, `${meta.name}: not in this browser. Add it again.`);
+    li.innerHTML = `<canvas width="160" height="90"></canvas><span class="no">${i + 1}</span><span class="nm">${esc(meta.name)}</span>
+      <span class="acts"><button class="up" title="${L('前へ', 'Earlier')}" aria-label="${L('前へ', 'Earlier')}">←</button><button class="del" title="${L('外す', 'Remove')}" aria-label="${L(`${meta.name} を外す`, `Remove ${meta.name}`)}">✕</button></span>`;
+    thumb(li.querySelector('canvas'), a);
+    li.querySelector('.del').addEventListener('click', () => removeAsset(meta.id));
+    li.querySelector('.up').addEventListener('click', () => moveAsset(meta.id, -1));
+    li.querySelector('.up').disabled = i === 0;
+    ul.appendChild(li);
+  });
+  $('mediaCtl').hidden = !m.assets.length;
+  $('mediaDrop').textContent = m.assets.length
+    ? L('ここに画像をドロップして追加', 'Drop more pictures here')
+    : L('ここに画像をドロップ（複数可）。歌詞の行ごとに背景として切り替わります', 'Drop pictures here (several at once). They change with every lyric line.');
+}
+function syncControls() {
+  const m = media(), A = autoB(), B = back();
+  $('mediaAuto').checked = A.mode === 'perLine';
+  $('mediaLyricBg').checked = m.lyricBg === 'over';
+  $('mediaOrder').value = A.order; $('mediaHold').value = A.hold; $('mediaFit').value = A.fit;
+  $('mediaDim').value = String(B.dim); $('mediaDimVal').textContent = Math.round(B.dim * 100) + '%';
+  $('mediaShuffle').hidden = A.order !== 'random';
+}
+
+async function restore() {
+  const m = media();
+  if (!m.assets.length) { renderList(); return; }
+  const r = await M.restore(S.project);
+  listKey = ''; renderList(); S.need = true;
+  if (r.missing.length) note(L(`このブラウザに無い画像が ${r.missing.length} 枚あります（${r.missing.slice(0, 3).join('、')}${r.missing.length > 3 ? ' ほか' : ''}）。もう一度追加すると戻ります`, `${r.missing.length} picture(s) are not in this browser (${r.missing.slice(0, 3).join(', ')}). Add them again to bring them back.`), true);
+  else note('');
+}
+
+function bind(sec) {
+  const fileIn = $('mediaFiles'), drop = $('mediaDrop');
+  fileIn.addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+  drop.addEventListener('click', () => fileIn.click());
+  drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } });
+  const over = on => e => { e.preventDefault(); drop.classList.toggle('over', on); };
+  sec.addEventListener('dragover', over(true)); sec.addEventListener('dragenter', over(true));
+  sec.addEventListener('dragleave', e => { if (!sec.contains(e.relatedTarget)) drop.classList.remove('over'); });
+  sec.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer && e.dataTransfer.files); });
+  $('mediaAuto').addEventListener('change', e => { autoB().mode = e.target.checked ? 'perLine' : 'off'; changed(); });
+  $('mediaLyricBg').addEventListener('change', e => { media().lyricBg = e.target.checked ? 'over' : 'off'; changed(); });
+  $('mediaOrder').addEventListener('change', e => { autoB().order = e.target.value; changed(); });
+  $('mediaHold').addEventListener('change', e => { autoB().hold = e.target.value; changed(); });
+  $('mediaFit').addEventListener('change', e => { autoB().fit = e.target.value; changed(); });
+  $('mediaShuffle').addEventListener('click', () => { autoB().seed = (autoB().seed + 1) % 2147483647; changed(L('並べ直しました', 'Reshuffled')); });
+  // 暗さ: live while dragging (no replan), saved when let go
+  $('mediaDim').addEventListener('input', e => {
+    const v = J.clamp(+e.target.value, 0, 0.9);
+    back().dim = v; if (S.plan && S.plan.media) S.plan.media.back.dim = v;
+    $('mediaDimVal').textContent = Math.round(v * 100) + '%'; S.need = true;
+  });
+  $('mediaDim').addEventListener('change', () => api.replan());
+  // スマホ: the heading folds the section like the others
+  sec.querySelector('h2').addEventListener('click', () => { if (S.mode === 'mobile') sec.classList.toggle('fold'); });
+}
+
+J.mediaUI = {
+  init(a) {
+    api = a; S = a.S;
+    if (!document.getElementById('mediaUiCss')) { const st = document.createElement('style'); st.id = 'mediaUiCss'; st.textContent = CSS; document.head.appendChild(st); }
+    const lines = $('lineList'), anchor = lines && lines.closest('.sec');
+    if (!anchor) return;
+    const sec = section();
+    anchor.parentNode.insertBefore(sec, anchor);
+    bind(sec);
+    lastProject = S.project; syncControls(); restore();
+  },
+  onPlan() {
+    if (!api || !$('mediaSec')) return;
+    if (S.project !== lastProject) { lastProject = S.project; listKey = ''; note(''); restore(); }   // another project was opened / reset
+    syncControls(); renderList();
+  },
+  /* the picture selector of one lyric line (only when the project has pictures) */
+  lineRow(li, ln, i) {
+    if (!api) return;
+    const m = media();
+    if (!m.assets.length) return;
+    const tools = li.querySelector('.tools'); if (!tools) return;
+    const own = back().cuts.find(c => c.lineRef && c.lineRef.line === i);
+    const shown = M.cutAt(S.plan, ln.start + 0.001, 'back');
+    const shownName = shown && !own ? (M.assetById(S.project, shown.assetId) || {}).name : null;
+    const sel = document.createElement('select');
+    sel.className = 'media-sel' + (own ? ' is-forced' : '');
+    sel.setAttribute('aria-label', L(`${i + 1}行目の背景画像`, `Picture behind line ${i + 1}`));
+    sel.title = L('この行の背景画像（自動＝順番に切り替え）', 'Picture behind this line (auto = in turn)');
+    sel.innerHTML = `<option value="">${esc(shownName ? L(`画像 自動（${shownName}）`, `Auto (${shownName})`) : L('画像 自動', 'Picture: auto'))}</option><option value="none">${L('画像なし', 'No picture')}</option>`
+      + m.assets.map((a, k) => `<option value="${esc(a.id)}">${k + 1}. ${esc(a.name)}</option>`).join('');
+    sel.value = own ? (own.assetId || 'none') : '';
+    sel.addEventListener('change', e => {
+      const v = e.target.value, cuts = back().cuts.filter(c => !(c.lineRef && c.lineRef.line === i));
+      if (v) cuts.push({ id: 'l' + i, assetId: v === 'none' ? '' : v, lineRef: { line: i }, start: null, end: null, fit: 'auto', enter: 'auto', hold: 'auto', exit: 'auto', opacity: 1 });
+      back().cuts = cuts;
+      api.replan(); api.seek(ln.start + 0.001);
+    });
+    tools.insertBefore(sel, tools.firstChild);
+  },
+  /* the pictures as a thin strip along the bottom of the cut band */
+  drawLane(x, X, w, top, bot, dpr) {
+    const P = S && S.plan && S.plan.media && S.plan.media.back;
+    if (!P || !P.cuts.length) return;
+    const y = bot - 5 * dpr, hh = 4 * dpr;
+    for (const c of P.cuts) {
+      const x0 = X(c.start), x1 = X(c.end);
+      if (x1 < 0 || x0 > w) continue;
+      const hue = J.sid(c.assetId) % 360, ok = J.mediaAssets.has(c.assetId);
+      x.fillStyle = ok ? `hsla(${hue},65%,60%,0.9)` : 'rgba(142,138,148,0.5)';
+      x.fillRect(x0, y, Math.max(1, x1 - x0 - 1), hh);
+    }
+  },
+};
+})();
+
 /* English labels are applied after all expression packs register, before the editor starts.
    Internal IDs and project JSON remain language independent. */
 (() => {
@@ -36375,6 +37034,7 @@ function mergeProject(p) {
   o.themeId = p && typeof p.themeId === 'string' && J.THEMES && J.THEMES[p.themeId] ? p.themeId : null;
   o.fonts = {};
   for (const [role, k] of Object.entries((p && p.fonts) || {})) if (typeof k === 'string' && J.FONTS[k] && /^[\w-]+$/.test(role)) o.fonts[role] = k;
+  if (J.media) o.media = J.media.normalize(p && p.media);   // my-jizura: pictures layer (untrusted input)
   return o;
 }
 /* v0.10: untagged lines of an LRC text now stay where they are written — move per-line settings of older projects along */
@@ -36431,6 +37091,7 @@ function replan() {
   if (typeof cutPick !== 'undefined' && cutPick.g) fillCutPick();
   S.need = true; autosave(); ensureFonts(); drawSwatch(); showNow();
   clearTimeout(warmTimer); warmTimer = setTimeout(warm, 450);
+  if (J.mediaUI) J.mediaUI.onPlan();   // my-jizura: pictures panel
 }
 /* pre-decompose glyphs used by piece animations while the editor is idle, so playback does not hitch */
 let warmTimer = 0, warmJob = 0;
@@ -36606,6 +37267,7 @@ function drawTimeline() {
       x.fillText(TL.z > 3 && cut.text ? cut.text : ((J.LAYOUTS[cut.layout] || {}).name || cut.layout), x0 + 5 * dpr, top + 13 * dpr); x.restore();
     }
   }
+  if (J.mediaUI) J.mediaUI.drawLane(x, X, w, top, bot, dpr);   // my-jizura: pictures strip
   x.font = `${10 * dpr}px monospace`;
   const LT = S.project.timing.lineTimes || {};
   for (const ln of S.plan.lines) {
@@ -36979,6 +37641,7 @@ function renderLines() {
       S.lineEls.forEach(x => x.classList.remove('open'));
       if (!was) { li.classList.add('open'); S.openLine = i; } else S.openLine = -1;
     });
+    if (J.mediaUI) J.mediaUI.lineRow(li, ln, i);   // my-jizura: picture of this line
     ol.appendChild(li); S.lineEls.push(li);
   });
   $('linesInfo').textContent = `${S.plan.lines.length} 行 / ${S.plan.cuts.length} 个镜头`;
@@ -38159,6 +38822,7 @@ async function restoreFonts() {
 function boot() {
   S.project = loadLocal();
   bind(); initVolume(); syncUI(); syncLoopBtn(); replan();
+  if (J.mediaUI) J.mediaUI.init({ S, replan, toast, seek, autosave });   // my-jizura: pictures panel
   restoreFonts();
   // first visit on a phone: スマホ mode
   let mode = window.matchMedia && window.matchMedia('(max-width: 760px)').matches ? 'mobile' : 'easy';

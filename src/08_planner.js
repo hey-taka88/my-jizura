@@ -36,6 +36,7 @@ J.defaultProject = () => ({
   locks: { tech: {}, params: {} },   // groups and values Randomize / Shuffle must not change (UI side only)
   colors: { enabled: false },
   fonts: {},
+  media: J.media ? J.media.defaults() : undefined,   // my-jizura: pictures layer (src/08m_media_*.js)
 });
 
 /* the original (After Effects-implemented) sets, captured before any expression pack registers */
@@ -604,6 +605,7 @@ J.plan = (project, audio) => {
   plan.events.sort((a, b) => a.t - b.t);
   plan.energy = audio && audio.energy ? audio.energy : null;
   plan.energyRate = audio && audio.energyRate ? audio.energyRate : 0;
+  if (J.media) plan.media = J.media.resolve(project, plan);   // my-jizura: pictures layer
   return plan;
 };
 

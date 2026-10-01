@@ -128,6 +128,7 @@ function mergeProject(p) {
   o.themeId = p && typeof p.themeId === 'string' && J.THEMES && J.THEMES[p.themeId] ? p.themeId : null;
   o.fonts = {};
   for (const [role, k] of Object.entries((p && p.fonts) || {})) if (typeof k === 'string' && J.FONTS[k] && /^[\w-]+$/.test(role)) o.fonts[role] = k;
+  if (J.media) o.media = J.media.normalize(p && p.media);   // my-jizura: pictures layer (untrusted input)
   return o;
 }
 /* v0.10: untagged lines of an LRC text now stay where they are written — move per-line settings of older projects along */
@@ -184,6 +185,7 @@ function replan() {
   if (typeof cutPick !== 'undefined' && cutPick.g) fillCutPick();
   S.need = true; autosave(); ensureFonts(); drawSwatch(); showNow();
   clearTimeout(warmTimer); warmTimer = setTimeout(warm, 450);
+  if (J.mediaUI) J.mediaUI.onPlan();   // my-jizura: pictures panel
 }
 /* pre-decompose glyphs used by piece animations while the editor is idle, so playback does not hitch */
 let warmTimer = 0, warmJob = 0;
@@ -359,6 +361,7 @@ function drawTimeline() {
       x.fillText(TL.z > 3 && cut.text ? cut.text : ((J.LAYOUTS[cut.layout] || {}).name || cut.layout), x0 + 5 * dpr, top + 13 * dpr); x.restore();
     }
   }
+  if (J.mediaUI) J.mediaUI.drawLane(x, X, w, top, bot, dpr);   // my-jizura: pictures strip
   x.font = `${10 * dpr}px monospace`;
   const LT = S.project.timing.lineTimes || {};
   for (const ln of S.plan.lines) {
@@ -732,6 +735,7 @@ function renderLines() {
       S.lineEls.forEach(x => x.classList.remove('open'));
       if (!was) { li.classList.add('open'); S.openLine = i; } else S.openLine = -1;
     });
+    if (J.mediaUI) J.mediaUI.lineRow(li, ln, i);   // my-jizura: picture of this line
     ol.appendChild(li); S.lineEls.push(li);
   });
   $('linesInfo').textContent = `${S.plan.lines.length}行 / ${S.plan.cuts.length}カット`;
@@ -1912,6 +1916,7 @@ async function restoreFonts() {
 function boot() {
   S.project = loadLocal();
   bind(); initVolume(); syncUI(); syncLoopBtn(); replan();
+  if (J.mediaUI) J.mediaUI.init({ S, replan, toast, seek, autosave });   // my-jizura: pictures panel
   restoreFonts();
   // first visit on a phone: スマホ mode
   let mode = window.matchMedia && window.matchMedia('(max-width: 760px)').matches ? 'mobile' : 'easy';

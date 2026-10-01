@@ -250,6 +250,15 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 
 ### Phase 1 — 静止画の背景（MVP）（Sonnet 実装 / Opus レビュー）
 
+**状態：完了（2026-10-01）。** 実装は `src/08m_media_model.js`・`08m_media_plan.js`・`08m_media_store.js`・`08m_media_draw.js`・`11z_media_ui.js`。本家ファイルへの変更は `08_planner.js`（2 行）・`09_render.js`（3 行）・`12_ui.js`（5 行）だけ。確認は `python3 dev/media_e2e.py`（21 項目）と `dev/smoke_all.py` のメディア付きの組み合わせ。
+計画との違い：
+- UI の節は `11z_media_ui.js` が実行時に作って「行とカット」の上に差し込む（`app/body.html`・`app/style.css` は本家のまま。CSS も同じファイルから `<style>` で足す）。
+- `tracks.<track>.dim`（暗さ 0〜0.9、背景は初期値 0.25）を追加。歌詞を読みやすくする簡易版で、Phase 3 の暗幕（scrim）までのつなぎ。
+- 行ごとの指定は `tracks.back.cuts` に `lineRef: { line }` 付きのカットとして入る（`assetId: ''` は「画像なし」）。自動の並びは `autoFill.back.seed` で決まり、おまかせでは変わらない。
+- 同じ画像が続く行はひとつのカットにまとめる（ゆっくり寄る動きが途中で戻らない）。次の画像は 0.6 秒でクロスフェード。
+- 英語以外の言語版の UI 文字列は、`11z_media_ui.js` の中で英語にしている（`app/english.py` の対応表は使っていない）。
+- タイムラインの画像の帯は表示だけ（クリック・ドラッグは Phase 3 の配置編集と一緒に）。
+
 1. **素材ストア** `src/08m_media_store.js`
    - `J.media.addFiles(files)`：画像を `createImageBitmap` で読み、`{id,name,type:'image',w,h,size,hash}` を返す。id は内容ハッシュ（SHA-256 の先頭 8〜12 文字）で重複排除
    - IndexedDB `files` に `media:<id>` = `{name,type,data}`。`J.media.restore(project)` で起動時に復元。`J.media.remove(id)`
