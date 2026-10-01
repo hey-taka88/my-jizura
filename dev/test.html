@@ -12,6 +12,8 @@ window.T = {
   counts(){ return Object.fromEntries(J.GROUP_KEYS.map(g=>[g, J.order(g).length])); },
   ids(g){ return J.order(g).slice(); },
   timeFrames(ts, scale){ const c=document.createElement('canvas'); c.width=Math.round(this.plan.W*scale); c.height=Math.round(this.plan.H*scale); const ctx=c.getContext('2d'); for (const t of ts) this.r.frame(ctx,this.plan,t,{scale,fast:true}); const out=[]; for (const t of ts){ const t0=performance.now(); this.r.frame(ctx,this.plan,t,{scale,fast:true}); out.push(performance.now()-t0);} return out; },
+  // my-jizura: n solid-colour pictures (1600×900, a white square in the middle) registered for the media layer → their ids
+  addMediaFixture(n){ n=n||3; const cols=['#d23b3b','#2f9e44','#2f6fd2','#d9a400','#9b3fd2']; const ids=[]; for(let i=0;i<n;i++){ const c=document.createElement('canvas'); c.width=1600; c.height=900; const x=c.getContext('2d'); x.fillStyle=cols[i%cols.length]; x.fillRect(0,0,1600,900); x.fillStyle='#fff'; x.fillRect(700,350,200,200); const id='fx'+i; J.media.registerSource(id,c,id); ids.push(id);} return ids; },
   shot(t, scale){ const c=document.getElementById('c'); scale=scale||0.5; c.width=this.plan.W*scale; c.height=this.plan.H*scale; const ctx=c.getContext('2d'); this.r.frame(ctx,this.plan,t,{scale}); return c.toDataURL('image/png'); },
 };
 </script></body></html>

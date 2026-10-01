@@ -112,7 +112,8 @@ class Renderer {
     // ---------- background graphic (per line) ----------
     // 透過PNG 前景／後景 (opt.layer): 'back' = background graphic + the decorations behind the lyrics, 'front' = the rest
     const layer = opt.transparent ? opt.layer || null : null;
-    if ((!opt.transparent || layer === 'back') && !key && mainCut && mainCut.bg && mainCut.bg !== 'none' && J.BG[mainCut.bg]) {
+    if (J.media && plan.media && !key && (!opt.transparent || layer === 'back')) J.media.drawTrack(ctx, plan, t, 'back', { scale, fast: opt.fast });   // my-jizura: background pictures
+    if ((!opt.transparent || layer === 'back') && !key && mainCut && mainCut.bg && mainCut.bg !== 'none' && J.BG[mainCut.bg] && !(J.media && J.media.hidesBg(plan, t))) {
       const env = this.makeEnv(ctx, plan, mainCut, sc, { pass: 'main', t: tq, lt: tq - mainCut.start, ltb: tq - mainCut.start, step, scale, allowFilter, energy, beat: beatInfo, bgOnly: true });
       ctx.save();
       try { J.BG[mainCut.bg].draw(env, mainCut.bgP || {}); } catch (e) { console.warn('bg', mainCut.bg, e); }
@@ -213,6 +214,7 @@ class Renderer {
       const env = this.makeEnv(ctx, plan, mainCut, sc, { pass: 'main', t: tq, lt: 0, ltb: 0, step, scale, allowFilter, energy, beat: beatInfo });
       J.drawHUD(env, plan);
     }
+    if (J.media && plan.media && !key && layer !== 'back') J.media.drawTrack(ctx, plan, t, 'front', { scale, fast: opt.fast });   // my-jizura: foreground pictures
     ctx.restore();
     // ---------- post ----------
     if (!opt.noPost) this.post(ctx, plan, t, tq, step, sc, scale, opt, allowFilter);
