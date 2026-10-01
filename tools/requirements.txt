@@ -1,0 +1,5 @@
+# tools/jizura_cli.py (command line) and tools/jizura_mcp.py (MCP server)
+#   pip install -r tools/requirements.txt && python3 -m playwright install chromium
+# With Google Chrome or Microsoft Edge installed, they are used instead of Playwright's Chromium (H.264 MP4 needs them).
+playwright>=1.45
+mcp>=1.10

@@ -36745,6 +36745,7 @@ async function addFiles(fileList) {
     note(msgs.join('。'), !!(errors.length || skipped || unsaved));
     listKey = '';
     changed(added.length ? L(`${added.length} 件追加しました`, `Added ${added.length}`) : null);
+    return { added: added.map(x => x.name), errors: errors.map(x => ({ name: x.name, reason: x.reason })), skipped: files.filter(f => !list.includes(f)).map(f => f.name) };
   } catch (e) { console.warn(e); note(L('読み込めませんでした', 'Could not read the files'), true); }
   finally { busy = false; }
 }
@@ -36891,6 +36892,9 @@ J.mediaUI = {
     });
     tools.insertBefore(sel, tools.firstChild);
   },
+  // for tools/jizura_driver.py (the CLI / MCP server): the same steps as choosing files / ✕ in the panel
+  addFiles: fileList => addFiles(fileList),
+  remove: id => removeAsset(id),
   /* the pictures as a thin strip along the bottom of the cut band */
   drawLane(x, X, w, top, bot, dpr) {
     const P = S && S.plan && S.plan.media && S.plan.media.back;

@@ -307,6 +307,18 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 
 ### Phase 2.5 — エージェントから操作する（CLI → MCP）（Opus 設計 / Sonnet 実装）
 
+**状態：完了（2026-10-01）。** `tools/jizura_driver.py`（土台）・`tools/jizura_cli.py`（`render` / `preview` / `plan` / `info`）・`tools/jizura_mcp.py`（17 ツール）。使い方は [docs/MCP.md](MCP.md)。
+確認は `python3 dev/mcp_e2e.py`（作業フォルダに WAV・Suno 形式の歌詞・画像 3 枚を作り、本物の MCP クライアントから全ツールを通す。mcp 1.x と 2.x の両方）。本家ファイルの変更なし（`11z_media_ui.js` に `J.mediaUI.addFiles` / `remove` を足しただけ）。
+計画との違い・まだ確かめていないこと：
+- MCP サーバーは `mcp/server.py` ではなく `tools/jizura_mcp.py`。リポジトリ直下に `mcp/` フォルダを置くと、Python の `mcp` パッケージと名前がぶつかって読み込めなくなることがあるため
+- ドライバーはページ内の関数（`J.ui` / `J.uiApi` / `J.mediaUI` / `J.exportMP4`）を呼び、ファイルは隠しの `<input type=file>` から渡す。新規作成・プロジェクトを開くは「開く」のファイル入力を通す（`mergeProject` の検証をそのまま使うため）。書き出しはページのダウンロードを受け取って保存
+- ブラウザは Chrome → Edge → Playwright の Chromium の順に使う（H.264 の読み書きは Chrome / Edge だけ）。**このクラウド環境には Chrome がないので、Chrome での実行（H.264 のクリップ・H.264 の書き出し）は未確認**
+- 歌詞を入れ直すと、行ごとの画像の指定も消す（行が変わるため。パネルの「LRC を読み込む」は消さない）
+- `set_look` の案の番号は、おまかせを番号から作った乱数で引く（同じ状態から同じ番号なら同じ見た目。おまかせは「今と違う」を選ぶので、今の見た目が違えば結果も変わる）
+- 書き出しの進み具合は MCP の progress 通知で送る（受け取るかはクライアント次第）。長い曲はクライアントの待ち時間（Claude Code の `MCP_TOOL_TIMEOUT`、Codex の `tool_timeout_sec`）を延ばす
+- アルバム単位の一括書き出し（IDEAS の G9）・連番 PNG の書き出しは、まだ CLI にない
+- Claude Desktop・Codex からの実際の接続は未確認（プロトコルは `dev/mcp_e2e.py` のクライアントで確認）
+
 目的：「この曲・歌詞・画像フォルダで、しっとり系の 16:9 と 9:16 を書き出して」を Claude（Claude Code / Claude Desktop）や Codex に頼めるようにする。
 アプリはブラウザの中で全部動くので、**見えないブラウザ（Playwright の headless Chromium）でビルド済みの `index.html` を開き、`J.*` の関数を呼ぶ**のが土台になる。
 `dev/media_e2e.py` がすでにこの形（画像を入れる → 再生位置のフレームを見る → MP4 を書き出す）なので、それを道具として切り出す。
