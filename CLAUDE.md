@@ -20,7 +20,7 @@ src/            ブラウザ版のエンジン・部品・UI。ビルドは sort
 app/body.html, app/style.css   UI の HTML/CSS（本家）。app/english.py, app/i18n*.py 各言語版
 vendor/         mp4-muxer（同梱）
 ae/, cep/       After Effects パネル（本家）。メディア対応は Phase 4 の任意
-dev/, tools/    テスト・チェックツール
+dev/, tools/    テスト・チェックツール。tools/jizura_*.py は★フォーク：エージェント用の CLI と MCP サーバー（docs/MCP.md）
 index.html, en/, ko/, … ビルド成果物（**手で編集しない**。python3 build.py で生成）
 docs/PLAN.md, docs/IDEAS.md, CHANGELOG.md
 ```
@@ -38,6 +38,8 @@ python3 dev/cost_scan.py t_all 45                 # 45ms を超えるフレー�
 python3 dev/lyrics_import_e2e.py                  # ビルド済みの index.html で歌詞タイミングの取り込み（SRT・VTT・Whisper / Suno の JSON・拡張 LRC）を確認
 python3 dev/video_e2e.py                          # ビルド済みの index.html で動画クリップを確認（時刻を色で埋め込んだクリップをページ内で作り、プレビュー・書き出しのフレームを照合）
 python3 dev/media_e2e.py [--shots out/media]      # ビルド済みの index.html で画像レイヤーを通しで確認（画像の追加 → 行ごとの切り替え → 再読み込み → 書き出し）。先に python3 build.py
+python3 dev/mcp_e2e.py [--browser chromium]       # MCP サーバー（tools/jizura_mcp.py）を本物の MCP クライアントから通しで確認（mcp 1.x / 2.x）
+python3 tools/jizura_cli.py info                  # CLI：選べる値とブラウザの対応状況。render / preview / plan は docs/MCP.md
 node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触ったときだけ
 ```
 
@@ -58,6 +60,7 @@ node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触った
 - **プロジェクト JSON は信用しない**：`mergeProject()` → `J.media.normalize()` で全フィールドを検証・clamp。id は `/^[\w-]{1,32}$/`、色は `#rrggbb`、文字列は長さ制限。素材の実体（バイト列）は JSON に入れない（IndexedDB `files` の `media:<id>`）。
 - **既存の歌詞側の挙動を変えない**：`plan.cuts` の中身・順序・シード消費を変えない（既存プロジェクトの見た目が変わる）。抽選を足すときは別の `rng` ストリーム（`J.rng(J.h(seed, 'media'))`）。
 - **例外を投げない**：`bb === null`、素材未読み込み、動画の seek 失敗をガードして黒／スキップで続行。`console.warn` に残す。
+- **エージェント用ツール**（`tools/jizura_*.py`）はパネルと同じ関数を呼ぶだけ（アプリの処理を Python で作り直さない）。`J.ui` / `J.uiApi` / `J.mediaUI` の形や入力欄の id を変えたら、`tools/jizura_driver.py` と `dev/mcp_e2e.py` も直す。MCP のツールは作業フォルダの外を読み書きしない・上書きしない
 - **ゴーストパス**：`env.pass !== 'main'` のときにメディアを描かない。
 - **透過 PNG の前景／後景分割**（`opt.layer`）と **keyBg（グリーン／ブラックバック）** の両方で正しく動くこと（keyBg 中はメディアを描かない）。
 - **UI 文字列は日本語**（本家に合わせる）。英語版は `app/english.py` の対応表に足す。他言語版が `tools/check_i18n.py` で警告しても、自分用なので日本語のままで可。
