@@ -4621,9 +4621,15 @@ const ease = x => 0.5 - 0.5 * Math.cos(Math.PI * J.clamp(x));
 const NEAR = 0.06;
 
 /* one cut at time t with opacity a */
-function drawCut(ctx, c, t, W, H, a, scale) {
+function drawCut(ctx, plan, c, t, W, H, a, scale) {
   const asset = J.mediaAssets.get(c.assetId);
-  if (!asset || !asset.source || a <= 0.001) return false;
+  if (!asset || a <= 0.001) return false;
+  let vt = null, frame = null;
+  if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
+    vt = M.videoTimes(plan, c, t);
+    frame = vt && M.videoFrame(asset, vt.main);
+    if (!frame) return false;
+  } else if (!asset.source) return false;
   const sw = asset.w, sh = asset.h;
   const base = c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
   let z = 1, px = 0, py = 0;
@@ -4638,14 +4644,19 @@ function drawCut(ctx, c, t, W, H, a, scale) {
   }
   // the size bucket depends on the cut's largest size, not on this frame's zoom (no new copy while zooming)
   const zMax = c.kb ? Math.max(c.kb.s0, c.kb.s1) : 1;
-  const src = M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
+  const src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
   if (!src) return false;
   // the copy is already close to the drawn size (made once with high quality), so plain bilinear is enough per frame;
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
-  const step = Math.max(src.width / (dw * scale), src.height / (dh * scale));
+  const step = frame ? 1 : Math.max(src.width / (dw * scale), src.height / (dh * scale));
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
   ctx.globalAlpha = a;
   ctx.drawImage(src, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh);
+  // loop seam (exports): the start of the clip fades in over its end
+  if (vt && vt.alt != null && vt.k > 0) {
+    const s2 = M.videoCap(asset, vt.alt);
+    if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh); }
+  }
   return true;
 }
 
@@ -4665,11 +4676,11 @@ M.drawTrack = (ctx, plan, t, track, o = {}) => {
       const k = ease(lt / c.inDur);
       // cross-fade: the picture before keeps moving underneath while this one appears
       const prev = c.index > 0 ? P.cuts[c.index - 1] : null;
-      if (prev && Math.abs(prev.end - c.start) < NEAR && drawCut(ctx, prev, t, W, H, P.opacity * prev.opacity, scale)) under = 1;
+      if (prev && Math.abs(prev.end - c.start) < NEAR && drawCut(ctx, plan, prev, t, W, H, P.opacity * prev.opacity, scale)) under = 1;
       a *= k;
     }
     if (c.exit === 'fade' && c.outDur > 0 && c.end - t < c.outDur) a *= ease((c.end - t) / c.outDur);
-    const drawn = drawCut(ctx, c, t, W, H, P.opacity * a, scale);
+    const drawn = drawCut(ctx, plan, c, t, W, H, P.opacity * a, scale);
     // 暗さ: a dark veil over the pictures so the lyrics stay readable (follows the pictures in and out)
     const seen = Math.max(under, drawn ? a / Math.max(0.001, c.opacity) : 0);
     if (P.dim > 0 && seen > 0) {
@@ -4700,7 +4711,7 @@ const M = (J.media = J.media || {});
 
 M.ID = /^[\w-]{1,32}$/;
 M.TRACKS = ['back', 'front'];
-M.TYPES = ['image', 'video'];             // 'video' is accepted now so Phase 2 projects open here; only images are drawn yet
+M.TYPES = ['image', 'video'];
 M.FIT = ['cover', 'contain'];
 M.ENTER = ['auto', 'cut', 'fade'];
 M.HOLD = ['auto', 'still', 'kenburns'];
@@ -4709,6 +4720,11 @@ M.BLEND = ['normal', 'multiply', 'screen', 'overlay'];
 M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.BG) where a background image shows
 M.AUTO = ['off', 'perLine'];
 M.ORDER = ['sequential', 'random'];
+// how a video clip shorter than its cut fills it (AI clips are 5–10 s, a cut can be a whole verse):
+//   loop: from the start again (with a short cross-fade at the seam when exporting) · pingpong: forwards, then backwards ·
+//   hold: stop on the last frame · beat: back to the start on every bar (N beats) of the song, looping inside a long bar
+M.EXTEND = ['loop', 'pingpong', 'hold', 'beat'];
+M.RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 M.MAX_ASSETS = 500;
 M.MAX_CUTS = 2000;
 
@@ -4720,8 +4736,8 @@ M.defaults = () => ({
     front: { cuts: [], opacity: 1, blend: 'normal', dim: 0 },
   },
   autoFill: {
-    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns' },
-    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still' },
+    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns', video: { extend: 'loop', rate: 1, beats: 4 } },
+    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', video: { extend: 'loop', rate: 1, beats: 4 } },
   },
   lyricBg: 'off',
 });
@@ -4752,6 +4768,18 @@ function cut(c, i) {
     opacity: num(c.opacity, 0, 1, 1),
   };
   if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
+  if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
+  return o;
+}
+/* video clip settings: start / end inside the clip (s), how it fills the cut, speed, bar length in beats; null d = keep only what is set */
+function video(v, d) {
+  v = isObj(v) ? v : {};
+  const o = {};
+  if (v.start != null || d) o.start = num(v.start, 0, 86400, 0);
+  if (v.end != null) { const e = num(v.end, 0, 86400, null); if (e != null) o.end = e; }
+  if (v.extend != null || d) o.extend = pick(v.extend, M.EXTEND, d ? d.extend : 'loop');
+  if (v.rate != null || d) o.rate = M.RATES.includes(+v.rate) ? +v.rate : (d ? d.rate : 1);
+  if (v.beats != null || d) o.beats = [1, 2, 4, 8, 16].includes(+v.beats) ? +v.beats : (d ? d.beats : 4);
   return o;
 }
 function track(t, d) {
@@ -4764,7 +4792,7 @@ function track(t, d) {
 function auto(a, d) {
   a = isObj(a) ? a : {};
   return { mode: pick(a.mode, M.AUTO, d.mode), order: pick(a.order, M.ORDER, d.order), seed: int(a.seed, 0, 2 ** 31 - 1, d.seed),
-    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold) };
+    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold), video: video(a.video, d.video) };
 }
 
 /* untrusted input → a complete, valid project.media */
@@ -4815,7 +4843,7 @@ function sequence(ids, A) {
 function resolveTrack(m, k, plan) {
   const T = m.tracks[k], A = m.autoFill[k], D = Math.max(0.1, plan.duration || 0);
   const ids = m.assets.map(a => a.id);
-  const known = new Set(ids);
+  const known = new Set(ids), meta = new Map(m.assets.map(a => [a.id, a]));
   const out = { cuts: [], opacity: T.opacity, blend: T.blend, dim: T.dim };
   const byLine = new Map(), timed = [];
   for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
@@ -4857,9 +4885,11 @@ function resolveTrack(m, k, plan) {
     const exit = own('exit', nxt && Math.abs(nxt.start - s.end) < NEAR ? 'cut' : 'fade');   // the next image fades in over this one
     const r = J.rng(J.h(seed, 0x6b62));
     const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
+    const a = meta.get(s.assetId) || {}, isVideo = a.type === 'video';
     out.cuts.push({
-      index: i, assetId: s.assetId, start: s.start, end: s.end, dur, line: s.line,
-      fit: own('fit', A.fit), enter, hold: own('hold', A.hold), exit,
+      index: i, assetId: s.assetId, type: isVideo ? 'video' : 'image', start: s.start, end: s.end, dur, line: s.line,
+      fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
+      v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
       inDur: enter === 'fade' ? Math.min(0.6, dur * 0.3) : 0,
       outDur: exit === 'fade' ? Math.min(0.45, dur * 0.25) : 0,
       opacity: src ? src.opacity : 1, seed,
@@ -4868,6 +4898,47 @@ function resolveTrack(m, k, plan) {
     });
   });
   return out;
+}
+
+/* which part of a clip plays and how it fills its cut (see M.EXTEND) */
+function clip(a, o) {
+  const d = Math.max(0.05, +a.duration || 0.05);
+  const s = J.clamp(+o.start || 0, 0, Math.max(0, d - 0.05));
+  const e = J.clamp(o.end != null ? +o.end : d, s + 0.05, d);
+  const len = e - s;
+  // loop seam: the last moments of the clip cross-fade into its start (0.3 s, or a tenth of a short clip)
+  return { a: s, b: e, len, extend: o.extend || 'loop', rate: +o.rate || 1, beats: +o.beats || 4, seam: len >= 1 ? Math.min(0.3, len * 0.1) : 0 };
+}
+
+/* where in the clip we are at song time t → { main, alt?, k? } (seconds in the clip; alt is shown over main with weight k) */
+M.videoTimes = (plan, c, t) => {
+  const v = c.v; if (!v) return null;
+  const L = v.len, end = v.a + Math.max(0, L - 1 / 120);
+  const at = x => Math.min(end, v.a + Math.max(0, x));
+  const looped = x => {
+    const o = v.seam;
+    if (!(o > 0) || L <= o * 2) return { main: at(x % L) };
+    // first pass plays the whole clip; then every pass starts at a+o and, in its last o seconds, the start fades in over it
+    const q = x < L ? x : o + ((x - L) % (L - o));
+    if (q < L - o) return { main: at(q) };
+    return { main: at(q), alt: at(q - (L - o)), k: (q - (L - o)) / o };
+  };
+  const u = Math.max(0, t - c.start) * v.rate;
+  switch (v.extend) {
+    case 'hold': return { main: at(u) };
+    case 'pingpong': { const m = u % (2 * L); return { main: at(m <= L ? m : 2 * L - m) }; }
+    case 'beat': return looped(Math.max(0, t - barStart(plan, c, t, v.beats)) * v.rate);
+    default: return looped(u);
+  }
+};
+/* the start of the bar (every n beats, counted from the first beat in the cut) that t is in; the cut start when there are no beats */
+function barStart(plan, c, t, n) {
+  const B = plan.beats || [];
+  if (!B.length) return c.start;
+  const last = i => { let lo = 0, hi = B.length - 1, ans = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (B[m] <= i) { ans = m; lo = m + 1; } else hi = m - 1; } return ans; };
+  const i0 = last(c.start - 0.05) + 1, it = last(t);
+  if (i0 >= B.length || it < i0) return c.start;
+  return B[i0 + Math.floor((it - i0) / n) * n];
 }
 
 M.resolve = (project, plan) => {
@@ -4952,20 +5023,39 @@ function keep(id, meta, dec) {
   J.mediaAssets.set(id, a);
   return a;
 }
-function release(a) { try { if (a.source && a.source.close) a.source.close(); } catch (e) {} a.scaled && a.scaled.clear(); }
+function release(a) {
+  if (a.type === 'video') { M.releaseVideo(a); return; }
+  try { if (a.source && a.source.close) a.source.close(); } catch (e) {} a.scaled && a.scaled.clear();
+}
+const MAX_VIDEO = 500 * 1048576;           // per clip (they are kept whole in this browser)
 
 M.isImageFile = f => !!f && (/^image\//.test(f.type || '') || IMG_EXT.test(f.name || ''));
 
-/* add picture files → [{ id, name, type, w, h, size }] (already known pictures are returned as they are);
-   errors: [{ name, reason }] */
+/* add picture / video files → [{ id, name, type, w, h, size, duration? }] (already known ones are skipped);
+   errors: [{ name, reason: 'type' | 'decode' | 'video' | 'size' }] */
 M.addFiles = async (files, known = []) => {
   const added = [], errors = [], ids = new Set(known.map(a => a.id));
   for (const f of Array.from(files || [])) {
-    if (!M.isImageFile(f)) { errors.push({ name: f && f.name, reason: 'type' }); continue; }
+    const isVideo = M.isVideoFile && M.isVideoFile(f);
+    if (!isVideo && !M.isImageFile(f)) { errors.push({ name: f && f.name, reason: 'type' }); continue; }
+    if (isVideo && f.size > MAX_VIDEO) { errors.push({ name: f.name, reason: 'size' }); continue; }
     try {
       const buf = await f.arrayBuffer();
       const id = await hashId(buf);
       if (ids.has(id) && J.mediaAssets.has(id)) continue;
+      if (isVideo) {
+        const type = f.type || 'video/mp4';
+        let a;
+        try { a = await M.videoAsset(id, { name: String(f.name || id).slice(0, 160) }, new Blob([buf], { type })); }
+        catch (e) { console.warn('media: cannot play', f.name, e); errors.push({ name: f.name, reason: 'video' }); continue; }
+        const old = J.mediaAssets.get(id); if (old) release(old);
+        J.mediaAssets.set(id, a);
+        const meta = { id, name: a.name, type: 'video', w: a.w, h: a.h, size: buf.byteLength, duration: +a.duration.toFixed(3) };
+        let stored = true;
+        try { await idbPut(id, { name: meta.name, type, data: buf }); } catch (e) { stored = false; console.warn('media: could not keep', meta.name, e); }
+        if (!ids.has(id)) { ids.add(id); added.push(Object.assign(meta, stored ? {} : { unsaved: true })); }
+        continue;
+      }
       const type = f.type || 'image/*';
       const dec = await decode(new Blob([buf], { type }));
       const meta = { id, name: String(f.name || id).slice(0, 160), type: 'image', w: dec.w, h: dec.h, size: buf.byteLength };
@@ -4990,7 +5080,8 @@ M.restore = async project => {
     try {
       const rec = await idbGet(meta.id);
       if (!rec || !rec.data) { missing.push(meta.name); continue; }
-      keep(meta.id, meta, await decode(new Blob([rec.data], { type: rec.type || '' })));
+      if (meta.type === 'video') J.mediaAssets.set(meta.id, await M.videoAsset(meta.id, meta, new Blob([rec.data], { type: rec.type || 'video/mp4' })));
+      else keep(meta.id, meta, await decode(new Blob([rec.data], { type: rec.type || '' })));
       loaded++;
     } catch (e) { console.warn('media: could not restore', meta.name, e); missing.push(meta.name); }
   }
@@ -5022,6 +5113,188 @@ M.sourceFor = (a, needW, needH) => {
 
 /* tests / embedding: register a picture that is not stored (e.g. a generated canvas) */
 M.registerSource = (id, source, name = id) => keep(id, { name }, { source, w: source.width, h: source.height });
+})();
+
+/* ============================================================
+   my-jizura (fork) — media layer: video clips (Phase 2)
+   · a clip is kept as its file (Blob → object URL) and shown through one muted <video> element
+   · preview  : M.syncPreview() lets the element play and nudges playbackRate to follow the song (a seek only on a
+                jump: a loop seam, a bar restart, ping-pong backwards, scrubbing) — every seek stalls the decoder
+   · export   : M.prepareFrame() seeks every needed clip to its exact time for each output frame (awaited by the
+                MP4 / PNG loops); when one clip is needed at two times (a loop seam), the other time is copied first
+   · at most MAX_LIVE elements hold a decoder; the least recently used ones are unloaded (src removed)
+   ============================================================ */
+(() => {
+'use strict';
+const M = (J.media = J.media || {});
+const MAX_LIVE = 3;
+const VIDEO_EXT = /\.(mp4|m4v|webm|mov|ogv)$/i;
+M.isVideoFile = f => !!f && (/^video\//.test(f.type || '') || VIDEO_EXT.test(f.name || ''));
+
+const once = (el, ev, ms, signal) => new Promise((res, rej) => {
+  let timer = 0;
+  const done = (ok, e) => { clearTimeout(timer); el.removeEventListener(ev, onEv); el.removeEventListener('error', onErr); if (signal) signal.removeEventListener('abort', onAbort); ok ? res() : rej(e); };
+  const onEv = () => done(true), onErr = () => done(false, new Error('video error ' + (el.error ? el.error.code : ''))), onAbort = () => done(false, new Error('aborted'));
+  el.addEventListener(ev, onEv); el.addEventListener('error', onErr);
+  if (signal) signal.addEventListener('abort', onAbort);
+  timer = setTimeout(() => done(false, new Error('timeout ' + ev)), ms);
+});
+const mkEl = () => { const v = document.createElement('video'); v.muted = true; v.defaultMuted = true; v.playsInline = true; v.preload = 'auto'; v.setAttribute('muted', ''); v.setAttribute('playsinline', ''); return v; };
+
+/* a stored clip → a media asset (throws when this browser cannot show its picture) */
+M.videoAsset = async (id, meta, blob) => {
+  const url = URL.createObjectURL(blob);
+  const el = mkEl();
+  try {
+    el.src = url;
+    await once(el, 'loadedmetadata', 20000);
+    if (!el.videoWidth || !(el.duration > 0) || !isFinite(el.duration)) throw new Error('no picture');
+    // a frame for the list (and proof that this browser can decode it)
+    el.currentTime = Math.min(1, el.duration * 0.3);
+    await once(el, 'seeked', 15000);
+    const th = document.createElement('canvas'); th.width = 160; th.height = 90;
+    const x = th.getContext('2d'), k = Math.max(160 / el.videoWidth, 90 / el.videoHeight);
+    x.drawImage(el, (160 - el.videoWidth * k) / 2, (90 - el.videoHeight * k) / 2, el.videoWidth * k, el.videoHeight * k);
+    return { id, type: 'video', name: meta.name, w: el.videoWidth, h: el.videoHeight, sw: el.videoWidth, sh: el.videoHeight, duration: el.duration,
+      blob, url, el, live: true, lastUse: performance.now(), thumb: th, caps: [] };
+  } catch (e) {
+    el.removeAttribute('src'); try { el.load(); } catch (e2) {}
+    URL.revokeObjectURL(url);
+    throw e;
+  }
+};
+M.releaseVideo = a => {
+  if (!a || a.type !== 'video') return;
+  try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {}
+  if (a.url) URL.revokeObjectURL(a.url);
+  a.live = false; a.caps = [];
+};
+
+/* decoder budget */
+function live(a) {
+  a.lastUse = performance.now();
+  if (a.live) return;
+  a.el.src = a.url; a.live = true;
+  try { a.el.load(); } catch (e) {}
+}
+function trim(keep) {
+  const vids = [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live && !keep.has(a.id)).sort((p, q) => p.lastUse - q.lastUse);
+  let n = [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live).length;
+  for (const a of vids) { if (n <= MAX_LIVE) break; try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {} a.live = false; n--; }
+}
+M.liveVideos = () => [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live).length;
+
+/* the video cuts showing at t (and the one before during a cross-fade) → Map assetId → [{ c, vt }] */
+function needed(plan, t) {
+  const out = new Map(), next = new Set();
+  for (const k of M.TRACKS) {
+    const P = plan.media && plan.media[k];
+    if (!P || !P.cuts.length) continue;
+    const c = M.cutAt(plan, t, k);
+    const add = cut => { if (!cut || cut.type !== 'video') return; const vt = M.videoTimes(plan, cut, t); if (!vt) return; if (!out.has(cut.assetId)) out.set(cut.assetId, []); out.get(cut.assetId).push({ c: cut, vt }); };
+    add(c);
+    if (c && c.index > 0 && c.enter === 'fade' && t - c.start < c.inDur) { const p = P.cuts[c.index - 1]; if (Math.abs(p.end - c.start) < 0.06) add(p); }
+    const nx = c ? P.cuts[c.index + 1] : P.cuts.find(x => x.start > t);
+    if (nx && nx.type === 'video' && nx.start - t < 2) next.add(nx.assetId);
+  }
+  return { out, next };
+}
+
+/* preview: follow the song with as few seeks as possible */
+let exportUntil = 0;                          // an export owns the clips while it runs (the preview must not seek them)
+M.syncPreview = (plan, t, playing, redraw) => {
+  if (!plan || !plan.media || performance.now() < exportUntil) return;
+  for (const a of J.mediaAssets.values()) if (a.type === 'video' && (a.at != null || (a.caps && a.caps.length))) { a.at = null; a.caps = []; }   // export copies are stale now
+  const { out, next } = needed(plan, t);
+  for (const [id, uses] of out) {
+    const a = J.mediaAssets.get(id);
+    if (!a || a.type !== 'video') continue;
+    live(a);
+    const { c, vt } = uses[0], el = a.el;
+    const target = vt.alt != null && vt.k > 0.5 ? vt.alt : vt.main;
+    // can the element simply play forward from here? (not at a seam, not backwards, not held on the last frame)
+    const ahead = M.videoTimes(plan, c, t + 0.1);
+    const smooth = playing && ahead && Math.abs((ahead.main - vt.main) - 0.1 * c.v.rate) < 0.02;
+    if (smooth) {
+      const drift = el.currentTime - target;
+      if (el.paused || Math.abs(drift) > 0.25) {
+        if (!el.seeking && Math.abs(drift) > 0.25) el.currentTime = target;
+        el.playbackRate = c.v.rate;
+        if (el.paused) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
+      } else el.playbackRate = J.clamp(c.v.rate * (1 - drift * 0.8), 0.25, 4);
+    } else {
+      if (!el.paused) el.pause();
+      if (Math.abs(el.currentTime - target) > 0.02 && !el.seeking && el.readyState >= 1) {
+        el.currentTime = target;
+        if (redraw) el.addEventListener('seeked', redraw, { once: true });
+      }
+    }
+  }
+  for (const a of J.mediaAssets.values()) if (a.type === 'video' && !out.has(a.id) && a.el && !a.el.paused) a.el.pause();
+  for (const id of next) { const a = J.mediaAssets.get(id); if (a && a.type === 'video' && !a.live && M.liveVideos() < MAX_LIVE) live(a); }
+  trim(new Set([...out.keys(), ...next]));
+};
+M.pauseVideos = () => { for (const a of J.mediaAssets.values()) if (a.type === 'video' && a.el && !a.el.paused) a.el.pause(); };
+
+/* export: every clip needed for the frame at t is at its exact time before the frame is drawn */
+async function seekExact(el, time, signal) {
+  if (el.readyState < 1) await once(el, 'loadedmetadata', 20000, signal);
+  const tt = J.clamp(time, 0, Math.max(0, el.duration - 1 / 240));
+  if (!el.paused) el.pause();
+  if (Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking) return;
+  el.currentTime = tt;
+  await once(el, 'seeked', 15000, signal);
+}
+const capKey = time => Math.round(time * 1000);
+M.prepareFrame = async (plan, t, signal) => {
+  if (!plan || !plan.media) return;
+  exportUntil = performance.now() + 2000;
+  M.pauseVideos();
+  const { out } = needed(plan, t);
+  for (const a of J.mediaAssets.values()) if (a.type === 'video') { a.caps = []; a.at = null; }
+  for (const [id, uses] of out) {
+    const a = J.mediaAssets.get(id);
+    if (!a || a.type !== 'video') continue;
+    live(a);
+    const times = [];
+    for (const { vt } of uses) { times.push(vt.main); if (vt.alt != null) times.push(vt.alt); }
+    const uniq = [...new Set(times.map(capKey))].map(k => k / 1000);
+    try {
+      // all but the last time are copied out; the element itself stays on the last one
+      for (let i = 0; i < uniq.length; i++) {
+        await seekExact(a.el, uniq[i], signal);
+        if (i < uniq.length - 1) {
+          const pool = a.pool || (a.pool = []);
+          const cv = pool[i] || (pool[i] = document.createElement('canvas'));
+          const k = Math.min(1, 1920 / Math.max(a.sw, a.sh));
+          cv.width = Math.round(a.sw * k); cv.height = Math.round(a.sh * k);
+          cv.getContext('2d').drawImage(a.el, 0, 0, cv.width, cv.height);
+          a.caps.push({ key: capKey(uniq[i]), cv });
+        }
+      }
+      a.at = capKey(uniq[uniq.length - 1]);
+    } catch (e) {
+      if (signal && signal.aborted) throw e;
+      console.warn('media: clip seek failed', a.name, e);           // the frame is drawn without this clip's exact picture
+    }
+  }
+  trim(new Set(out.keys()));
+  exportUntil = performance.now() + 2000;
+};
+
+/* an exact copy made for this export frame, or null */
+M.videoCap = (a, time) => {
+  const k = capKey(time);
+  for (const c of a.caps || []) if (c.key === k) return c.cv;
+  return a.at === k && a.live && a.el.readyState >= 2 ? a.el : null;      // the time the element itself was left on
+};
+/* what to draw for a clip at clip time `time`: an exact copy, the element, or null (nothing decoded yet) */
+M.videoFrame = (a, time) => {
+  const k = capKey(time);
+  for (const c of a.caps || []) if (c.key === k) return c.cv;
+  if (!a.live || a.el.readyState < 2) return null;
+  return a.el;
+};
 })();
 
 /* ============================================================
@@ -5890,6 +6163,7 @@ async function encodeMP4({ plan, project, audio, onProgress, signal, range, file
       if (signal && signal.aborted) { closeEnc(); throw new Error('Đã hủy'); }
       if (err) throw err;
       if (venc.state === 'closed') throw new Error('Bộ mã hóa đã dừng');
+      if (J.media && plan.media) await J.media.prepareFrame(plan, span.t0 + i / fps, signal);   // my-jizura: video clips at their exact frame
       R.frame(ctx, plan, span.t0 + i / fps, { scale });
       const vf = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
       try { venc.encode(vf, { keyFrame: i % (fps * 2) === 0 }); } finally { vf.close(); }
@@ -5986,6 +6260,7 @@ J.exportPNGZip = async ({ plan, project, transparent, layers, onProgress, signal
   for (let i = 0; i < total; i += every) {
     if (signal && signal.aborted) throw new Error('Đã hủy');
     const name = `jizura_${String(i).padStart(5, '0')}.png`;
+    if (J.media && plan.media) await J.media.prepareFrame(plan, span.t0 + i / fps, signal);   // my-jizura: video clips at their exact frame
     for (const layer of layers ? ['back', 'front'] : [null]) {
       R.frame(ctx, plan, span.t0 + i / fps, { scale, transparent: transparent || !!layers, layer });
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
@@ -36373,8 +36648,8 @@ if (typeof document !== 'undefined') {
 })();
 
 /* ============================================================
-   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures)
-   · a 「画像・背景」 section above 「行とカット」 (built here, so app/body.html stays as upstream ships it)
+   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures, Phase 2: video clips)
+   · a 「画像・動画」 section above 「行とカット」 (built here, so app/body.html stays as upstream ships it)
    · a picture selector on every lyric line, a strip for the pictures on the timeline
    12_ui.js calls: J.mediaUI.init(api) in boot(), onPlan() at the end of replan(),
                    lineRow(li, ln, i) for each row of the line list, drawLane(…) inside drawTimeline()
@@ -36408,6 +36683,8 @@ const CSS = `
 .media-note { font-size: 11px; color: var(--muted); }
 .media-note.warn { color: var(--amber); }
 .ln .tools select.media-sel { max-width: 120px; }
+.media-list .dur { position: absolute; right: 3px; bottom: 19px; font: 600 10px/1 var(--mono); color: #fff; background: rgba(0,0,0,0.65); padding: 2px 4px; border-radius: 2px; }
+.media-video[hidden] { display: none !important; }
 .ln .tools select.media-sel.is-forced { border-color: var(--cyan); }
 `;
 
@@ -36415,9 +36692,9 @@ function section() {
   const sec = document.createElement('div');
   sec.className = 'sec media-sec'; sec.id = 'mediaSec';
   sec.innerHTML = `
-    <div class="sec-h"><h2>${L('画像・背景', 'Pictures')}</h2><span class="sec-btns"><label class="file ghost small" title="${L('背景に使う画像を追加します（複数選べます）', 'Add pictures for the background (several at once)')}">${L('画像を追加', 'Add pictures')}<input id="mediaFiles" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.avif" multiple></label></span></div>
-    <div id="mediaDrop" class="media-drop" role="button" tabindex="0">${L('ここに画像をドロップ（複数可）。歌詞の行ごとに背景として切り替わります', 'Drop pictures here (several at once). They change with every lyric line.')}</div>
-    <ul id="mediaList" class="media-list" aria-label="${L('画像の一覧', 'Pictures')}"></ul>
+    <div class="sec-h"><h2>${L('画像・動画', 'Pictures & clips')}</h2><span class="sec-btns"><label class="file ghost small" title="${L('背景に使う画像や動画を追加します（複数選べます）', 'Add pictures or video clips for the background (several at once)')}">${L('追加', 'Add')}<input id="mediaFiles" type="file" accept="image/*,video/*,.png,.jpg,.jpeg,.webp,.gif,.avif,.mp4,.m4v,.webm,.mov" multiple></label></span></div>
+    <div id="mediaDrop" class="media-drop" role="button" tabindex="0">${L('ここに画像や動画をドロップ（複数可）。歌詞の行ごとに背景として切り替わります', 'Drop pictures or video clips here (several at once). They change with every lyric line.')}</div>
+    <ul id="mediaList" class="media-list" aria-label="${L('素材の一覧', 'Pictures and clips')}"></ul>
     <div id="mediaCtl">
       <div class="media-checks">
         <label><input type="checkbox" id="mediaAuto"> ${L('行ごとに自動で切り替える', 'Change with every line')}</label>
@@ -36428,6 +36705,11 @@ function section() {
         <label class="field">${L('動き', 'Motion')}<select id="mediaHold"><option value="kenburns">${L('ゆっくり動かす', 'Slow zoom / pan')}</option><option value="still">${L('止める', 'Still')}</option></select></label>
         <label class="field">${L('写し方', 'Fit')}<select id="mediaFit"><option value="cover">${L('画面いっぱい', 'Fill the frame')}</option><option value="contain">${L('全体を表示', 'Show it whole')}</option></select></label>
         <label class="field">${L('暗さ', 'Darken')} <span id="mediaDimVal" class="mono"></span><input id="mediaDim" type="range" min="0" max="0.8" step="0.05"></label>
+      </div>
+      <div id="mediaVideo" class="media-opts media-video" style="margin-top:8px" hidden>
+        <label class="field">${L('動画が短いとき', 'When a clip is short')}<select id="mediaExtend"><option value="loop">${L('くり返す', 'Loop')}</option><option value="pingpong">${L('往復する', 'Ping-pong')}</option><option value="hold">${L('最後で止める', 'Hold the last frame')}</option><option value="beat">${L('小節ごとに頭から', 'Restart every bar')}</option></select></label>
+        <label class="field">${L('動画の速さ', 'Clip speed')}<select id="mediaRate">${[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => `<option value="${r}">${r}×</option>`).join('')}</select></label>
+        <label class="field" id="mediaBeatsWrap">${L('頭出しの間隔', 'Restart every')}<select id="mediaBeats">${[1, 2, 4, 8, 16].map(n => `<option value="${n}">${n} ${L('拍', n > 1 ? 'beats' : 'beat')}</option>`).join('')}</select></label>
       </div>
       <div class="row" style="margin-top:8px"><button id="mediaShuffle" class="ghost small" title="${L('ランダムの並びを作り直します', 'Shuffle the random order again')}">${L('並べ直す', 'Reshuffle')}</button></div>
     </div>
@@ -36448,29 +36730,32 @@ async function addFiles(fileList) {
   try {
     const m = media();
     const room = M.MAX_ASSETS - m.assets.length;
-    const list = files.filter(M.isImageFile).slice(0, Math.max(0, room));
+    const list = files.filter(f => M.isImageFile(f) || (M.isVideoFile && M.isVideoFile(f))).slice(0, Math.max(0, room));
     const { added, errors } = await M.addFiles(list, m.assets);
     const unsaved = added.filter(a => a.unsaved).length;
     for (const a of added) { delete a.unsaved; m.assets.push(a); }
     const skipped = files.length - list.length;
     const msgs = [];
-    if (added.length) msgs.push(L(`${added.length} 枚追加しました`, `Added ${added.length}`));
-    if (errors.length || skipped) msgs.push(L(`${errors.length + skipped} 枚は読み込めませんでした（画像ではないか、HEIC などこのブラウザで開けない形式です）`, `${errors.length + skipped} could not be read (not a picture, or a format this browser cannot open, such as HEIC)`));
+    if (added.length) msgs.push(L(`${added.length} 件追加しました`, `Added ${added.length}`));
+    const vbad = errors.filter(e => e.reason === 'video').length, big = errors.filter(e => e.reason === 'size').length, other = errors.length - vbad - big + skipped;
+    if (vbad) msgs.push(L(`${vbad} 本の動画はこのブラウザで再生できませんでした（HEVC・ProRes など）。H.264 の MP4 か WebM に変換してください`, `${vbad} clip(s) cannot be played in this browser (HEVC, ProRes …). Convert them to H.264 MP4 or WebM.`));
+    if (big) msgs.push(L(`${big} 本の動画は大きすぎます（1 本 500MB まで）`, `${big} clip(s) are too large (500 MB each at most)`));
+    if (other) msgs.push(L(`${other} 件は読み込めませんでした（画像・動画ではないか、HEIC などこのブラウザで開けない形式です）`, `${other} could not be read (not a picture or clip, or a format this browser cannot open, such as HEIC)`));
     if (unsaved) msgs.push(L('このブラウザに保存できなかったので、再読み込みすると消えます', 'Could not be kept in this browser; they will be gone after a reload'));
     note(msgs.join('。'), !!(errors.length || skipped || unsaved));
     listKey = '';
-    changed(added.length ? L(`画像を ${added.length} 枚追加しました`, `Added ${added.length} picture(s)`) : null);
-  } catch (e) { console.warn(e); note(L('画像を読み込めませんでした', 'Could not read the pictures'), true); }
+    changed(added.length ? L(`${added.length} 件追加しました`, `Added ${added.length}`) : null);
+  } catch (e) { console.warn(e); note(L('読み込めませんでした', 'Could not read the files'), true); }
   finally { busy = false; }
 }
 
 async function removeAsset(id) {
   const m = media(), a = m.assets.find(x => x.id === id); if (!a) return;
-  if (!window.confirm(L(`「${a.name}」を外しますか？このブラウザに保存した画像データも消えます。`, `Remove "${a.name}"? Its copy kept in this browser is deleted too.`))) return;
+  if (!window.confirm(L(`「${a.name}」を外しますか？このブラウザに保存したデータも消えます。`, `Remove "${a.name}"? Its copy kept in this browser is deleted too.`))) return;
   m.assets = m.assets.filter(x => x.id !== id);
   for (const k of M.TRACKS) m.tracks[k].cuts = m.tracks[k].cuts.filter(c => c.assetId !== id);   // those lines go back to 自動
   await M.remove(id);
-  listKey = ''; changed(L('画像を外しました', 'Removed'));
+  listKey = ''; changed(L('外しました', 'Removed'));
 }
 function moveAsset(id, d) {
   const A = media().assets, i = A.findIndex(x => x.id === id), j = i + d;
@@ -36482,7 +36767,9 @@ function moveAsset(id, d) {
 function thumb(cv, a) {
   const x = cv.getContext('2d'), w = cv.width, h = cv.height;
   x.fillStyle = '#0c0c0e'; x.fillRect(0, 0, w, h);
-  if (!a || !a.source) return;
+  if (!a) return;
+  if (a.type === 'video') { if (a.thumb) x.drawImage(a.thumb, 0, 0, w, h); return; }
+  if (!a.source) return;
   const k = Math.max(w / a.sw, h / a.sh), dw = a.sw * k, dh = a.sh * k;
   x.imageSmoothingQuality = 'high'; x.drawImage(a.source, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
@@ -36496,8 +36783,8 @@ function renderList() {
   m.assets.forEach((meta, i) => {
     const a = J.mediaAssets.get(meta.id);
     const li = document.createElement('li'); li.className = a ? '' : 'missing';
-    li.title = a ? `${meta.name}（${meta.w}×${meta.h}）` : L(`${meta.name}：このブラウザに画像がありません。もう一度追加してください`, `${meta.name}: not in this browser. Add it again.`);
-    li.innerHTML = `<canvas width="160" height="90"></canvas><span class="no">${i + 1}</span><span class="nm">${esc(meta.name)}</span>
+    li.title = a ? `${meta.name}（${meta.w}×${meta.h}）` : L(`${meta.name}：このブラウザにデータがありません。もう一度追加してください`, `${meta.name}: not in this browser. Add it again.`);
+    li.innerHTML = `<canvas width="160" height="90"></canvas><span class="no">${i + 1}</span>${meta.type === 'video' ? `<span class="dur">▶ ${(+meta.duration || 0).toFixed(1)}s</span>` : ''}<span class="nm">${esc(meta.name)}</span>
       <span class="acts"><button class="up" title="${L('前へ', 'Earlier')}" aria-label="${L('前へ', 'Earlier')}">←</button><button class="del" title="${L('外す', 'Remove')}" aria-label="${L(`${meta.name} を外す`, `Remove ${meta.name}`)}">✕</button></span>`;
     thumb(li.querySelector('canvas'), a);
     li.querySelector('.del').addEventListener('click', () => removeAsset(meta.id));
@@ -36507,8 +36794,8 @@ function renderList() {
   });
   $('mediaCtl').hidden = !m.assets.length;
   $('mediaDrop').textContent = m.assets.length
-    ? L('ここに画像をドロップして追加', 'Drop more pictures here')
-    : L('ここに画像をドロップ（複数可）。歌詞の行ごとに背景として切り替わります', 'Drop pictures here (several at once). They change with every lyric line.');
+    ? L('ここに画像や動画をドロップして追加', 'Drop more pictures or clips here')
+    : L('ここに画像や動画をドロップ（複数可）。歌詞の行ごとに背景として切り替わります', 'Drop pictures or video clips here (several at once). They change with every lyric line.');
 }
 function syncControls() {
   const m = media(), A = autoB(), B = back();
@@ -36517,6 +36804,10 @@ function syncControls() {
   $('mediaOrder').value = A.order; $('mediaHold').value = A.hold; $('mediaFit').value = A.fit;
   $('mediaDim').value = String(B.dim); $('mediaDimVal').textContent = Math.round(B.dim * 100) + '%';
   $('mediaShuffle').hidden = A.order !== 'random';
+  const V = A.video || { extend: 'loop', rate: 1, beats: 4 };
+  $('mediaVideo').hidden = !m.assets.some(a => a.type === 'video');
+  $('mediaExtend').value = V.extend; $('mediaRate').value = String(V.rate); $('mediaBeats').value = String(V.beats);
+  $('mediaBeatsWrap').hidden = V.extend !== 'beat';
 }
 
 async function restore() {
@@ -36524,7 +36815,7 @@ async function restore() {
   if (!m.assets.length) { renderList(); return; }
   const r = await M.restore(S.project);
   listKey = ''; renderList(); S.need = true;
-  if (r.missing.length) note(L(`このブラウザに無い画像が ${r.missing.length} 枚あります（${r.missing.slice(0, 3).join('、')}${r.missing.length > 3 ? ' ほか' : ''}）。もう一度追加すると戻ります`, `${r.missing.length} picture(s) are not in this browser (${r.missing.slice(0, 3).join(', ')}). Add them again to bring them back.`), true);
+  if (r.missing.length) note(L(`このブラウザに無い画像・動画が ${r.missing.length} 件あります（${r.missing.slice(0, 3).join('、')}${r.missing.length > 3 ? ' ほか' : ''}）。もう一度追加すると戻ります`, `${r.missing.length} file(s) are not in this browser (${r.missing.slice(0, 3).join(', ')}). Add them again to bring them back.`), true);
   else note('');
 }
 
@@ -36542,6 +36833,10 @@ function bind(sec) {
   $('mediaOrder').addEventListener('change', e => { autoB().order = e.target.value; changed(); });
   $('mediaHold').addEventListener('change', e => { autoB().hold = e.target.value; changed(); });
   $('mediaFit').addEventListener('change', e => { autoB().fit = e.target.value; changed(); });
+  const vset = (k, v) => { const A = autoB(); A.video = Object.assign({ extend: 'loop', rate: 1, beats: 4 }, A.video, { [k]: v }); changed(); };
+  $('mediaExtend').addEventListener('change', e => vset('extend', e.target.value));
+  $('mediaRate').addEventListener('change', e => vset('rate', +e.target.value));
+  $('mediaBeats').addEventListener('change', e => vset('beats', +e.target.value));
   $('mediaShuffle').addEventListener('click', () => { autoB().seed = (autoB().seed + 1) % 2147483647; changed(L('並べ直しました', 'Reshuffled')); });
   // 暗さ: live while dragging (no replan), saved when let go
   $('mediaDim').addEventListener('input', e => {
@@ -36563,6 +36858,8 @@ J.mediaUI = {
     const sec = section();
     anchor.parentNode.insertBefore(sec, anchor);
     bind(sec);
+    // the sound of a video file can be the song (decodeAudioData reads the audio track of MP4 / WebM)
+    const au = $('audioFile'); if (au && !/video/.test(au.accept)) au.accept += ',video/mp4,video/webm,.mp4,.m4v,.webm,.mov';
     lastProject = S.project; syncControls(); restore();
   },
   onPlan() {
@@ -36581,10 +36878,10 @@ J.mediaUI = {
     const shownName = shown && !own ? (M.assetById(S.project, shown.assetId) || {}).name : null;
     const sel = document.createElement('select');
     sel.className = 'media-sel' + (own ? ' is-forced' : '');
-    sel.setAttribute('aria-label', L(`${i + 1}行目の背景画像`, `Picture behind line ${i + 1}`));
-    sel.title = L('この行の背景画像（自動＝順番に切り替え）', 'Picture behind this line (auto = in turn)');
+    sel.setAttribute('aria-label', L(`${i + 1}行目の背景（画像・動画）`, `Picture or clip behind line ${i + 1}`));
+    sel.title = L('この行の背景の画像・動画（自動＝順番に切り替え）', 'Picture or clip behind this line (auto = in turn)');
     sel.innerHTML = `<option value="">${esc(shownName ? L(`画像 自動（${shownName}）`, `Auto (${shownName})`) : L('画像 自動', 'Picture: auto'))}</option><option value="none">${L('画像なし', 'No picture')}</option>`
-      + m.assets.map((a, k) => `<option value="${esc(a.id)}">${k + 1}. ${esc(a.name)}</option>`).join('');
+      + m.assets.map((a, k) => `<option value="${esc(a.id)}">${k + 1}. ${a.type === 'video' ? '▶ ' : ''}${esc(a.name)}</option>`).join('');
     sel.value = own ? (own.assetId || 'none') : '';
     sel.addEventListener('change', e => {
       const v = e.target.value, cuts = back().cuts.filter(c => !(c.lineRef && c.lineRef.line === i));
@@ -37144,6 +37441,7 @@ function tick(now) {
     S.t = t; S.need = true;
     followTlPlayhead();
   }
+  if (J.media) J.media.syncPreview(S.plan, S.t, S.playing, () => { S.need = true; });   // my-jizura: video clips follow the song
   if (S.need) { S.need = false; draw(); }
 }
 function updateTimeUI() {

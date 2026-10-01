@@ -281,6 +281,7 @@ function tick(now) {
     S.t = t; S.need = true;
     followTlPlayhead();
   }
+  if (J.media) J.media.syncPreview(S.plan, S.t, S.playing, () => { S.need = true; });   // my-jizura: video clips follow the song
   if (S.need) { S.need = false; draw(); }
 }
 function updateTimeUI() {

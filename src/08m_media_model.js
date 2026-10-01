@@ -9,7 +9,7 @@ const M = (J.media = J.media || {});
 
 M.ID = /^[\w-]{1,32}$/;
 M.TRACKS = ['back', 'front'];
-M.TYPES = ['image', 'video'];             // 'video' is accepted now so Phase 2 projects open here; only images are drawn yet
+M.TYPES = ['image', 'video'];
 M.FIT = ['cover', 'contain'];
 M.ENTER = ['auto', 'cut', 'fade'];
 M.HOLD = ['auto', 'still', 'kenburns'];
@@ -18,6 +18,11 @@ M.BLEND = ['normal', 'multiply', 'screen', 'overlay'];
 M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.BG) where a background image shows
 M.AUTO = ['off', 'perLine'];
 M.ORDER = ['sequential', 'random'];
+// how a video clip shorter than its cut fills it (AI clips are 5–10 s, a cut can be a whole verse):
+//   loop: from the start again (with a short cross-fade at the seam when exporting) · pingpong: forwards, then backwards ·
+//   hold: stop on the last frame · beat: back to the start on every bar (N beats) of the song, looping inside a long bar
+M.EXTEND = ['loop', 'pingpong', 'hold', 'beat'];
+M.RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 M.MAX_ASSETS = 500;
 M.MAX_CUTS = 2000;
 
@@ -29,8 +34,8 @@ M.defaults = () => ({
     front: { cuts: [], opacity: 1, blend: 'normal', dim: 0 },
   },
   autoFill: {
-    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns' },
-    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still' },
+    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns', video: { extend: 'loop', rate: 1, beats: 4 } },
+    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', video: { extend: 'loop', rate: 1, beats: 4 } },
   },
   lyricBg: 'off',
 });
@@ -61,6 +66,18 @@ function cut(c, i) {
     opacity: num(c.opacity, 0, 1, 1),
   };
   if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
+  if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
+  return o;
+}
+/* video clip settings: start / end inside the clip (s), how it fills the cut, speed, bar length in beats; null d = keep only what is set */
+function video(v, d) {
+  v = isObj(v) ? v : {};
+  const o = {};
+  if (v.start != null || d) o.start = num(v.start, 0, 86400, 0);
+  if (v.end != null) { const e = num(v.end, 0, 86400, null); if (e != null) o.end = e; }
+  if (v.extend != null || d) o.extend = pick(v.extend, M.EXTEND, d ? d.extend : 'loop');
+  if (v.rate != null || d) o.rate = M.RATES.includes(+v.rate) ? +v.rate : (d ? d.rate : 1);
+  if (v.beats != null || d) o.beats = [1, 2, 4, 8, 16].includes(+v.beats) ? +v.beats : (d ? d.beats : 4);
   return o;
 }
 function track(t, d) {
@@ -73,7 +90,7 @@ function track(t, d) {
 function auto(a, d) {
   a = isObj(a) ? a : {};
   return { mode: pick(a.mode, M.AUTO, d.mode), order: pick(a.order, M.ORDER, d.order), seed: int(a.seed, 0, 2 ** 31 - 1, d.seed),
-    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold) };
+    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold), video: video(a.video, d.video) };
 }
 
 /* untrusted input → a complete, valid project.media */

@@ -36,6 +36,7 @@ python3 dev/build_test.py all --all-packs         # テスト用バンドル dev
 python3 dev/smoke_all.py t_all                    # 全部品を多数の組み合わせで描画。problems 0 と page errors [] が合格
 python3 dev/cost_scan.py t_all 45                 # 45ms を超えるフレームの一覧
 python3 dev/lyrics_import_e2e.py                  # ビルド済みの index.html で歌詞タイミングの取り込み（SRT・VTT・Whisper / Suno の JSON・拡張 LRC）を確認
+python3 dev/video_e2e.py                          # ビルド済みの index.html で動画クリップを確認（時刻を色で埋め込んだクリップをページ内で作り、プレビュー・書き出しのフレームを照合）
 python3 dev/media_e2e.py [--shots out/media]      # ビルド済みの index.html で画像レイヤーを通しで確認（画像の追加 → 行ごとの切り替え → 再読み込み → 書き出し）。先に python3 build.py
 node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触ったときだけ
 ```
@@ -52,7 +53,8 @@ node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触った
 
 - **本家ファイルへの変更は最小限**：新しい機能は `src/08m_*.js` / `src/11z_*.js` に置き、本家ファイル（`08_planner.js`, `09_render.js`, `11_export.js`, `12_ui.js`, `app/body.html`）には `if (J.media) …` でガードした**呼び出し 1 行**だけを足す。upstream を `git merge upstream/main` で取り込み続けるため。
 - **決定論**：同じ project からは同じ plan と同じフレームが出る。描画中の `Math.random()` 禁止。乱数は `plan()` 側の `rng` か `J.r()` ハッシュ。
-- **性能**：1 描画 ≈ 2ms（1080p）。全画面 `getImageData` 禁止（縮小キャンバスなら可）。毎フレームの canvas / ImageBitmap 生成禁止（キャッシュ）。video 要素は同時 2 本まで。
+- **性能**：1 描画 ≈ 2ms（1080p）。全画面 `getImageData` 禁止（縮小キャンバスなら可）。毎フレームの canvas / ImageBitmap 生成禁止（キャッシュ）。デコーダーを持つ video 要素は同時 3 本まで（`08m_media_video.js` の `MAX_LIVE`）。
+- **動画の時刻**：曲の時刻 → クリップの時刻は必ず `J.media.videoTimes()` を通す（プレビュー・書き出し・描画が同じ答えを使うため）。書き出し中は `prepareFrame()` がクリップを持つので、プレビュー側からシークしない。
 - **プロジェクト JSON は信用しない**：`mergeProject()` → `J.media.normalize()` で全フィールドを検証・clamp。id は `/^[\w-]{1,32}$/`、色は `#rrggbb`、文字列は長さ制限。素材の実体（バイト列）は JSON に入れない（IndexedDB `files` の `media:<id>`）。
 - **既存の歌詞側の挙動を変えない**：`plan.cuts` の中身・順序・シード消費を変えない（既存プロジェクトの見た目が変わる）。抽選を足すときは別の `rng` ストリーム（`J.rng(J.h(seed, 'media'))`）。
 - **例外を投げない**：`bb === null`、素材未読み込み、動画の seek 失敗をガードして黒／スキップで続行。`console.warn` に残す。

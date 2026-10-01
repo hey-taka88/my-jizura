@@ -290,6 +290,13 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 
 ### Phase 2 — 動画（Sonnet 実装 / Opus レビュー。難所は Opus が設計）
 
+**状態：完了（2026-10-01）。** 実装は `src/08m_media_video.js`（要素の管理・プレビュー同期・書き出し時の正確なシーク）と、`08m_media_plan.js` の `M.videoTimes`（曲の時刻 → クリップの時刻）、`08m_media_store.js`・`08m_media_draw.js`・`11z_media_ui.js` の追加分。本家ファイルの追加は `12_ui.js` 1 行（`tick()`）と `11_export.js` 2 行（MP4・PNG のループ）。確認は `python3 dev/video_e2e.py`（フレームごとに時刻を色で埋め込んだクリップを使い、プレビュー・再生中の追従・4 つの伸ばし方の書き出し・継ぎ目のクロスフェード・PNG・再読み込みを確認）。
+計画との違い・まだ確かめていないこと：
+- `requestVideoFrameCallback` は待っていない（Chromium では `seeked` の直後に正しいフレームが描けることをテストで確認。Safari で違えば足す）。`canPlayType` での事前判定もしない（実際に読み込んで 1 フレーム描けるかで判定）。書き出しの進捗に「動画のフレーム待ち」は出していない
+- 伸ばし方・速さ・頭出しの拍数は、今は全体で 1 つの設定（カットごとの設定はデータの形だけ用意。編集 UI は Phase 3 の配置編集と一緒に）
+- 同時に読み込む動画は最大 3 本（今の・前の・次の）。動画にはゆっくり寄る動きを付けない（明示したときだけ）
+- 確認は Chromium（GPU なしのクラウド環境）・VP9 の 320×180 クリップ・24fps の書き出し。**1080p の H.264 クリップ、30fps の書き出し、Safari / iPad はまだ確かめていない**（受け入れ条件のうち実機で見るもの）
+
 1. `addFiles` で動画を受け付ける：`<video muted playsinline preload="auto">` + `loadedmetadata` で `w,h,duration`。`canPlayType` で不可なら案内。サムネは 1 秒目を canvas に描く
 2. プレビュー同期 `J.media.syncPreview(plan, t, playing)`：§2.4 の playbackRate 吸収。`12_ui.js` の `tick()` から 1 行呼ぶ。停止・スクラブは seek
 3. 書き出し `J.media.prepareFrame(plan, t, signal)`：`seeked` + `requestVideoFrameCallback` 待ち。`encodeMP4` / `exportPNGZip` のループ先頭に `await` を 1 行。進捗に「動画のフレーム待ち」を出す
