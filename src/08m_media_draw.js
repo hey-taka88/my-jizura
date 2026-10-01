@@ -12,9 +12,15 @@ const ease = x => 0.5 - 0.5 * Math.cos(Math.PI * J.clamp(x));
 const NEAR = 0.06;
 
 /* one cut at time t with opacity a */
-function drawCut(ctx, c, t, W, H, a, scale) {
+function drawCut(ctx, plan, c, t, W, H, a, scale) {
   const asset = J.mediaAssets.get(c.assetId);
-  if (!asset || !asset.source || a <= 0.001) return false;
+  if (!asset || a <= 0.001) return false;
+  let vt = null, frame = null;
+  if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
+    vt = M.videoTimes(plan, c, t);
+    frame = vt && M.videoFrame(asset, vt.main);
+    if (!frame) return false;
+  } else if (!asset.source) return false;
   const sw = asset.w, sh = asset.h;
   const base = c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
   let z = 1, px = 0, py = 0;
@@ -29,14 +35,19 @@ function drawCut(ctx, c, t, W, H, a, scale) {
   }
   // the size bucket depends on the cut's largest size, not on this frame's zoom (no new copy while zooming)
   const zMax = c.kb ? Math.max(c.kb.s0, c.kb.s1) : 1;
-  const src = M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
+  const src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
   if (!src) return false;
   // the copy is already close to the drawn size (made once with high quality), so plain bilinear is enough per frame;
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
-  const step = Math.max(src.width / (dw * scale), src.height / (dh * scale));
+  const step = frame ? 1 : Math.max(src.width / (dw * scale), src.height / (dh * scale));
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
   ctx.globalAlpha = a;
   ctx.drawImage(src, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh);
+  // loop seam (exports): the start of the clip fades in over its end
+  if (vt && vt.alt != null && vt.k > 0) {
+    const s2 = M.videoCap(asset, vt.alt);
+    if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh); }
+  }
   return true;
 }
 
@@ -56,11 +67,11 @@ M.drawTrack = (ctx, plan, t, track, o = {}) => {
       const k = ease(lt / c.inDur);
       // cross-fade: the picture before keeps moving underneath while this one appears
       const prev = c.index > 0 ? P.cuts[c.index - 1] : null;
-      if (prev && Math.abs(prev.end - c.start) < NEAR && drawCut(ctx, prev, t, W, H, P.opacity * prev.opacity, scale)) under = 1;
+      if (prev && Math.abs(prev.end - c.start) < NEAR && drawCut(ctx, plan, prev, t, W, H, P.opacity * prev.opacity, scale)) under = 1;
       a *= k;
     }
     if (c.exit === 'fade' && c.outDur > 0 && c.end - t < c.outDur) a *= ease((c.end - t) / c.outDur);
-    const drawn = drawCut(ctx, c, t, W, H, P.opacity * a, scale);
+    const drawn = drawCut(ctx, plan, c, t, W, H, P.opacity * a, scale);
     // 暗さ: a dark veil over the pictures so the lyrics stay readable (follows the pictures in and out)
     const seen = Math.max(under, drawn ? a / Math.max(0.001, c.opacity) : 0);
     if (P.dim > 0 && seen > 0) {

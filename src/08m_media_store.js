@@ -60,20 +60,39 @@ function keep(id, meta, dec) {
   J.mediaAssets.set(id, a);
   return a;
 }
-function release(a) { try { if (a.source && a.source.close) a.source.close(); } catch (e) {} a.scaled && a.scaled.clear(); }
+function release(a) {
+  if (a.type === 'video') { M.releaseVideo(a); return; }
+  try { if (a.source && a.source.close) a.source.close(); } catch (e) {} a.scaled && a.scaled.clear();
+}
+const MAX_VIDEO = 500 * 1048576;           // per clip (they are kept whole in this browser)
 
 M.isImageFile = f => !!f && (/^image\//.test(f.type || '') || IMG_EXT.test(f.name || ''));
 
-/* add picture files → [{ id, name, type, w, h, size }] (already known pictures are returned as they are);
-   errors: [{ name, reason }] */
+/* add picture / video files → [{ id, name, type, w, h, size, duration? }] (already known ones are skipped);
+   errors: [{ name, reason: 'type' | 'decode' | 'video' | 'size' }] */
 M.addFiles = async (files, known = []) => {
   const added = [], errors = [], ids = new Set(known.map(a => a.id));
   for (const f of Array.from(files || [])) {
-    if (!M.isImageFile(f)) { errors.push({ name: f && f.name, reason: 'type' }); continue; }
+    const isVideo = M.isVideoFile && M.isVideoFile(f);
+    if (!isVideo && !M.isImageFile(f)) { errors.push({ name: f && f.name, reason: 'type' }); continue; }
+    if (isVideo && f.size > MAX_VIDEO) { errors.push({ name: f.name, reason: 'size' }); continue; }
     try {
       const buf = await f.arrayBuffer();
       const id = await hashId(buf);
       if (ids.has(id) && J.mediaAssets.has(id)) continue;
+      if (isVideo) {
+        const type = f.type || 'video/mp4';
+        let a;
+        try { a = await M.videoAsset(id, { name: String(f.name || id).slice(0, 160) }, new Blob([buf], { type })); }
+        catch (e) { console.warn('media: cannot play', f.name, e); errors.push({ name: f.name, reason: 'video' }); continue; }
+        const old = J.mediaAssets.get(id); if (old) release(old);
+        J.mediaAssets.set(id, a);
+        const meta = { id, name: a.name, type: 'video', w: a.w, h: a.h, size: buf.byteLength, duration: +a.duration.toFixed(3) };
+        let stored = true;
+        try { await idbPut(id, { name: meta.name, type, data: buf }); } catch (e) { stored = false; console.warn('media: could not keep', meta.name, e); }
+        if (!ids.has(id)) { ids.add(id); added.push(Object.assign(meta, stored ? {} : { unsaved: true })); }
+        continue;
+      }
       const type = f.type || 'image/*';
       const dec = await decode(new Blob([buf], { type }));
       const meta = { id, name: String(f.name || id).slice(0, 160), type: 'image', w: dec.w, h: dec.h, size: buf.byteLength };
@@ -98,7 +117,8 @@ M.restore = async project => {
     try {
       const rec = await idbGet(meta.id);
       if (!rec || !rec.data) { missing.push(meta.name); continue; }
-      keep(meta.id, meta, await decode(new Blob([rec.data], { type: rec.type || '' })));
+      if (meta.type === 'video') J.mediaAssets.set(meta.id, await M.videoAsset(meta.id, meta, new Blob([rec.data], { type: rec.type || 'video/mp4' })));
+      else keep(meta.id, meta, await decode(new Blob([rec.data], { type: rec.type || '' })));
       loaded++;
     } catch (e) { console.warn('media: could not restore', meta.name, e); missing.push(meta.name); }
   }

@@ -281,6 +281,7 @@ function tick(now) {
     S.t = t; S.need = true;
     followTlPlayhead();
   }
+  if (J.media) J.media.syncPreview(S.plan, S.t, S.playing, () => { S.need = true; });   // my-jizura: video clips follow the song
   if (S.need) { S.need = false; draw(); }
 }
 function updateTimeUI() {
@@ -1778,6 +1779,7 @@ function bind() {
     let text = '';
     try { const buf = await f.arrayBuffer(); try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e2) { text = new TextDecoder('shift_jis').decode(buf); } }
     catch (err) { toast('LRC を読み込めませんでした'); return; }
+    if (J.lyricsImport) text = J.lyricsImport.toLrc(text, f.name).text;   // my-jizura: SRT / VTT / Whisper・Suno JSON → LRC
     if (S.project.lyrics.trim() && !window.confirm('今の歌詞を LRC の内容に置き換えます（行ごとの時刻・指定・書き出す範囲も消えます。「元に戻す」で戻せます）。よろしいですか？')) return;
     loadLrc(text);
   });

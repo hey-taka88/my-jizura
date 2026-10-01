@@ -29,7 +29,7 @@ function sequence(ids, A) {
 function resolveTrack(m, k, plan) {
   const T = m.tracks[k], A = m.autoFill[k], D = Math.max(0.1, plan.duration || 0);
   const ids = m.assets.map(a => a.id);
-  const known = new Set(ids);
+  const known = new Set(ids), meta = new Map(m.assets.map(a => [a.id, a]));
   const out = { cuts: [], opacity: T.opacity, blend: T.blend, dim: T.dim };
   const byLine = new Map(), timed = [];
   for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
@@ -71,9 +71,11 @@ function resolveTrack(m, k, plan) {
     const exit = own('exit', nxt && Math.abs(nxt.start - s.end) < NEAR ? 'cut' : 'fade');   // the next image fades in over this one
     const r = J.rng(J.h(seed, 0x6b62));
     const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
+    const a = meta.get(s.assetId) || {}, isVideo = a.type === 'video';
     out.cuts.push({
-      index: i, assetId: s.assetId, start: s.start, end: s.end, dur, line: s.line,
-      fit: own('fit', A.fit), enter, hold: own('hold', A.hold), exit,
+      index: i, assetId: s.assetId, type: isVideo ? 'video' : 'image', start: s.start, end: s.end, dur, line: s.line,
+      fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
+      v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
       inDur: enter === 'fade' ? Math.min(0.6, dur * 0.3) : 0,
       outDur: exit === 'fade' ? Math.min(0.45, dur * 0.25) : 0,
       opacity: src ? src.opacity : 1, seed,
@@ -82,6 +84,47 @@ function resolveTrack(m, k, plan) {
     });
   });
   return out;
+}
+
+/* which part of a clip plays and how it fills its cut (see M.EXTEND) */
+function clip(a, o) {
+  const d = Math.max(0.05, +a.duration || 0.05);
+  const s = J.clamp(+o.start || 0, 0, Math.max(0, d - 0.05));
+  const e = J.clamp(o.end != null ? +o.end : d, s + 0.05, d);
+  const len = e - s;
+  // loop seam: the last moments of the clip cross-fade into its start (0.3 s, or a tenth of a short clip)
+  return { a: s, b: e, len, extend: o.extend || 'loop', rate: +o.rate || 1, beats: +o.beats || 4, seam: len >= 1 ? Math.min(0.3, len * 0.1) : 0 };
+}
+
+/* where in the clip we are at song time t → { main, alt?, k? } (seconds in the clip; alt is shown over main with weight k) */
+M.videoTimes = (plan, c, t) => {
+  const v = c.v; if (!v) return null;
+  const L = v.len, end = v.a + Math.max(0, L - 1 / 120);
+  const at = x => Math.min(end, v.a + Math.max(0, x));
+  const looped = x => {
+    const o = v.seam;
+    if (!(o > 0) || L <= o * 2) return { main: at(x % L) };
+    // first pass plays the whole clip; then every pass starts at a+o and, in its last o seconds, the start fades in over it
+    const q = x < L ? x : o + ((x - L) % (L - o));
+    if (q < L - o) return { main: at(q) };
+    return { main: at(q), alt: at(q - (L - o)), k: (q - (L - o)) / o };
+  };
+  const u = Math.max(0, t - c.start) * v.rate;
+  switch (v.extend) {
+    case 'hold': return { main: at(u) };
+    case 'pingpong': { const m = u % (2 * L); return { main: at(m <= L ? m : 2 * L - m) }; }
+    case 'beat': return looped(Math.max(0, t - barStart(plan, c, t, v.beats)) * v.rate);
+    default: return looped(u);
+  }
+};
+/* the start of the bar (every n beats, counted from the first beat in the cut) that t is in; the cut start when there are no beats */
+function barStart(plan, c, t, n) {
+  const B = plan.beats || [];
+  if (!B.length) return c.start;
+  const last = i => { let lo = 0, hi = B.length - 1, ans = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (B[m] <= i) { ans = m; lo = m + 1; } else hi = m - 1; } return ans; };
+  const i0 = last(c.start - 0.05) + 1, it = last(t);
+  if (i0 >= B.length || it < i0) return c.start;
+  return B[i0 + Math.floor((it - i0) / n) * n];
 }
 
 M.resolve = (project, plan) => {
