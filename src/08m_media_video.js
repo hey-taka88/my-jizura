@@ -76,7 +76,7 @@ function needed(plan, t) {
     const c = M.cutAt(plan, t, k);
     const add = cut => { if (!cut || cut.type !== 'video') return; const vt = M.videoTimes(plan, cut, t); if (!vt) return; if (!out.has(cut.assetId)) out.set(cut.assetId, []); out.get(cut.assetId).push({ c: cut, vt }); };
     add(c);
-    if (c && c.index > 0 && c.enter === 'fade' && t - c.start < c.inDur) { const p = P.cuts[c.index - 1]; if (Math.abs(p.end - c.start) < 0.06) add(p); }
+    if (c && c.index > 0 && c.join && c.join !== 'cut' && t - c.start < c.inDur) add(P.cuts[c.index - 1]);   // the picture it takes over from
     const nx = c ? P.cuts[c.index + 1] : P.cuts.find(x => x.start > t);
     if (nx && nx.type === 'video' && nx.start - t < 2) next.add(nx.assetId);
   }

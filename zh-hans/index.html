@@ -4612,6 +4612,8 @@ J.omakase = (project, rnd = Math.random, themeId = null) => {
    J.media.drawTrack(ctx, plan, t, track, o) draws the pictures of one track in design space (ctx already scaled by o.scale).
    Called from J.Renderer.frame(): 'back' right after the background colour, 'front' after the HUD.
    Pictures that are not loaded (yet) are skipped; nothing here throws into the renderer.
+   Phase 3: 動き (still / kenburns / pan / push / drift / beatPulse), 登場・退場 (fade / slide / zoom / wipe),
+   つなぎ (cross-fade, or a lyric transition J.TRANS between two pictures), 加工 (08m_media_look.js), 暗幕.
    ============================================================ */
 (() => {
 'use strict';
@@ -4619,9 +4621,19 @@ const M = (J.media = J.media || {});
 const BLEND = { normal: 'source-over', multiply: 'multiply', screen: 'screen', overlay: 'overlay' };
 const ease = x => 0.5 - 0.5 * Math.cos(Math.PI * J.clamp(x));
 const NEAR = 0.06;
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const fit = (cv, w, h) => { if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } return cv; };
+// how far a motion zooms in at most (the size of the kept copy follows it, not the zoom of one frame)
+const ZMAX = { pan: 1.14, push: 1.2, drift: 1.08, beatPulse: 1.07 };
 
-/* one cut at time t with opacity a */
-function drawCut(ctx, plan, c, t, W, H, a, scale) {
+function lastBeat(B, t) {
+  let lo = 0, hi = B.length - 1, ans = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (B[m] <= t) { ans = m; lo = m + 1; } else hi = m - 1; }
+  return ans < 0 ? null : B[ans];
+}
+
+/* one cut at time t with opacity a. fx = { in, out } (0..1, 1 = fully shown) for 登場 / 退場, null = none */
+function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   const asset = J.mediaAssets.get(c.assetId);
   if (!asset || a <= 0.001) return false;
   let vt = null, frame = null;
@@ -4632,37 +4644,91 @@ function drawCut(ctx, plan, c, t, W, H, a, scale) {
   } else if (!asset.source) return false;
   const sw = asset.w, sh = asset.h;
   const base = c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
-  let z = 1, px = 0, py = 0;
-  if (c.hold === 'kenburns' && c.kb) {
-    const p = ease((t - c.start) / Math.max(0.1, c.dur));
-    z = J.lerp(c.kb.s0, c.kb.s1, p); px = J.lerp(c.kb.x0, c.kb.x1, p) * W; py = J.lerp(c.kb.y0, c.kb.y1, p) * H;
+  const lt = t - c.start, p = J.clamp(lt / Math.max(0.1, c.dur)), hp = c.hp || { sign: 1, ph: 0, per: 7 };
+  let z = 1, px = 0, py = 0, pan = 0;
+  switch (c.hold) {
+    case 'kenburns': if (c.kb) { const e = ease(p); z = J.lerp(c.kb.s0, c.kb.s1, e); px = J.lerp(c.kb.x0, c.kb.x1, e) * W; py = J.lerp(c.kb.y0, c.kb.y1, e) * H; } break;
+    case 'pan': z = ZMAX.pan; pan = (0.5 - 0.5 * Math.cos(Math.PI * (0.15 + 0.7 * p))) * 2 - 1; break;    // across, at an even pace
+    case 'push': z = 1 + (ZMAX.push - 1) * ease(p); break;
+    case 'drift': { z = ZMAX.drift; const ph = hp.ph + Math.PI * 2 * lt / hp.per; px = Math.sin(ph) * W * 0.022; py = Math.cos(ph * 0.8) * H * 0.018; break; }
+    case 'beatPulse': { const b = plan.beats && plan.beats.length ? lastBeat(plan.beats, t) : null; z = 1.025 + (b != null && t - b < 0.6 ? 0.045 * Math.exp(-(t - b) * 7) : 0); break; }
   }
+  // 登場・退場 that move the picture (a fade only changes its opacity)
+  let clip = null;
+  const move = (kind, k, out) => {             // k: 0 = hidden … 1 = in place
+    const d = c.dir || 'L', sx = d === 'L' ? -1 : d === 'R' ? 1 : 0, sy = d === 'U' ? -1 : d === 'D' ? 1 : 0;
+    if (kind === 'fade') a *= k;
+    else if (kind === 'slide') { const off = (1 - k) * 0.22 * (out ? -1 : 1); px += sx * off * W; py += sy * off * H; a *= Math.min(1, k * 1.6); }
+    else if (kind === 'zoom') { z *= out ? 1 + 0.12 * (1 - k) : 1 + 0.18 * (1 - k); a *= k; }
+    else if (kind === 'wipe') clip = { d: out ? ({ L: 'R', R: 'L', U: 'D', D: 'U' })[d] : d, k };
+  };
+  if (fx && fx.in != null) move(c.enter, fx.in, false);
+  if (fx && fx.out != null) move(c.exit, fx.out, true);
+  if (a <= 0.001) return false;
   const dw = sw * base * z, dh = sh * base * z;
-  if (c.fit !== 'contain') {               // a filled frame never shows its edge while drifting
-    const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);
+  if (pan) { const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2); if (mx >= my) px = pan * mx * hp.sign; else py = pan * my * hp.sign; }
+  if (c.fit !== 'contain' && !(fx && (fx.in != null || fx.out != null) && (c.enter === 'slide' || c.exit === 'slide'))) {
+    const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);   // a filled frame never shows its edge while drifting
     px = J.clamp(px, -mx, mx); py = J.clamp(py, -my, my);
   }
   // the size bucket depends on the cut's largest size, not on this frame's zoom (no new copy while zooming)
-  const zMax = c.kb ? Math.max(c.kb.s0, c.kb.s1) : 1;
-  const src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
+  const zMax = c.hold === 'kenburns' && c.kb ? Math.max(c.kb.s0, c.kb.s1) : ZMAX[c.hold] || 1;
+  let src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
   if (!src) return false;
+  if (c.treat && c.treat !== 'none' && M.treated) src = M.treated(asset, src, c, plan, 0);
   // the copy is already close to the drawn size (made once with high quality), so plain bilinear is enough per frame;
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
   const step = frame ? 1 : Math.max(src.width / (dw * scale), src.height / (dh * scale));
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
+  const x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
+  if (clip) {
+    const k = ease(clip.k), d = clip.d;
+    ctx.save(); ctx.beginPath();
+    if (d === 'L') ctx.rect(0, 0, W * k, H); else if (d === 'R') ctx.rect(W * (1 - k), 0, W * k, H);
+    else if (d === 'U') ctx.rect(0, 0, W, H * k); else ctx.rect(0, H * (1 - k), W, H * k);
+    ctx.clip();
+  }
   ctx.globalAlpha = a;
-  ctx.drawImage(src, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh);
+  ctx.drawImage(src, x0, y0, dw, dh);
   // loop seam (exports): the start of the clip fades in over its end
   if (vt && vt.alt != null && vt.k > 0) {
-    const s2 = M.videoCap(asset, vt.alt);
-    if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, W / 2 - dw / 2 + px, H / 2 - dh / 2 + py, dw, dh); }
+    let s2 = M.videoCap(asset, vt.alt);
+    if (s2 && c.treat && c.treat !== 'none' && M.treated) s2 = M.treated(asset, s2, c, plan, 1);
+    if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, x0, y0, dw, dh); }
   }
+  if (clip) ctx.restore();
+  return true;
+}
+
+/* つなぎ with a lyric transition: the picture before and this one, each over the frame as it is, composited by J.TRANS */
+let TA = null, TB = null, TC = null;
+function transJoin(ctx, plan, P, prev, c, t, W, H, scale, o) {
+  const TD = J.TRANS[c.join], cw = ctx.canvas.width, ch = ctx.canvas.height;
+  const A = fit(TA || (TA = mk(2, 2)), cw, ch), B = fit(TB || (TB = mk(2, 2)), cw, ch);
+  let any = false;
+  for (const [cv, cut] of [[A, prev], [B, c]]) {
+    const x = cv.getContext('2d');
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.filter = 'none'; x.globalCompositeOperation = 'copy'; x.drawImage(ctx.canvas, 0, 0);
+    x.setTransform(scale, 0, 0, scale, 0, 0); x.imageSmoothingEnabled = true; x.globalCompositeOperation = BLEND[P.blend] || 'source-over';
+    if (drawCut(x, plan, cut, t, W, H, P.opacity * cut.opacity, scale, null)) any = true;
+    x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
+  }
+  if (!any) return false;
+  const sc = (plan.style && plan.style.schemes && plan.style.schemes[0]) || {};
+  ctx.save();
+  try {
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+    ctx.clearRect(0, 0, cw, ch);                // A and B already hold what was under the pictures
+    TD.draw(ctx, A, B, J.clamp((t - c.start) / c.inDur), { cw, ch, sc, scPrev: sc, st: plan.style, P: c.transP || {}, step: Math.floor(t * 24), t, scale,
+      allowFilter: !o.fast, seed: c.seed | 0, tmp: (w, h) => fit(TC || (TC = mk(2, 2)), w, h) });
+  } catch (e) { console.warn('media: trans', c.join, e); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = 'copy'; ctx.drawImage(B, 0, 0); }
+  finally { ctx.restore(); }
   return true;
 }
 
 M.drawTrack = (ctx, plan, t, track, o = {}) => {
   const P = plan && plan.media && plan.media[track];
-  if (!P || !P.cuts.length) return;
+  if (!P || !P.cuts.length || (M.measuring && M.measuring())) return;
   const c = M.cutAt(plan, t, track);
   if (!c) return;
   const W = plan.W, H = plan.H, scale = o.scale || 1;
@@ -4671,23 +4737,31 @@ M.drawTrack = (ctx, plan, t, track, o = {}) => {
     ctx.imageSmoothingEnabled = true;
     ctx.globalCompositeOperation = BLEND[P.blend] || 'source-over';
     const lt = t - c.start;
-    let a = c.opacity, under = 0;
-    if (c.enter === 'fade' && c.inDur > 0 && lt < c.inDur) {
-      const k = ease(lt / c.inDur);
+    const prev = c.index > 0 ? P.cuts[c.index - 1] : null;
+    const joining = !!(prev && c.join && c.join !== 'cut' && c.inDur > 0 && lt < c.inDur && Math.abs(prev.end - c.start) < NEAR);
+    let seen = 0;
+    if (joining && c.join !== 'fade' && J.TRANS[c.join]) {
+      if (transJoin(ctx, plan, P, prev, c, t, W, H, scale, o)) seen = 1;
+    } else {
+      let a = c.opacity, under = 0, k = 1;
       // cross-fade: the picture before keeps moving underneath while this one appears
-      const prev = c.index > 0 ? P.cuts[c.index - 1] : null;
-      if (prev && Math.abs(prev.end - c.start) < NEAR && drawCut(ctx, plan, prev, t, W, H, P.opacity * prev.opacity, scale)) under = 1;
-      a *= k;
+      if (joining && drawCut(ctx, plan, prev, t, W, H, P.opacity * prev.opacity, scale, null)) under = 1;
+      if (joining) { k = ease(lt / c.inDur); a *= k; }
+      const fx = {};
+      if (!c.join && c.enter !== 'cut' && c.inDur > 0 && lt < c.inDur) fx.in = ease(lt / c.inDur);
+      if (c.exit !== 'cut' && c.outDur > 0 && c.end - t < c.outDur) fx.out = ease((c.end - t) / c.outDur);
+      const drawn = drawCut(ctx, plan, c, t, W, H, P.opacity * a, scale, fx);
+      const vis = (fx.in != null && c.enter !== 'wipe' ? fx.in : 1) * (fx.out != null && c.exit !== 'wipe' ? fx.out : 1) * k;
+      seen = Math.max(under, drawn ? vis : 0);
     }
-    if (c.exit === 'fade' && c.outDur > 0 && c.end - t < c.outDur) a *= ease((c.end - t) / c.outDur);
-    const drawn = drawCut(ctx, plan, c, t, W, H, P.opacity * a, scale);
     // 暗さ: a dark veil over the pictures so the lyrics stay readable (follows the pictures in and out)
-    const seen = Math.max(under, drawn ? a / Math.max(0.001, c.opacity) : 0);
     if (P.dim > 0 && seen > 0) {
       ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = P.dim * Math.min(1, seen);
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
     }
+    // 暗幕: a soft plate behind the lyrics where the picture makes them hard to read
+    if (track === 'back' && M.drawScrim && seen > 0) M.drawScrim(ctx, plan, c, t, W, H, seen, P);
   } catch (e) { console.warn('media', track, e); }
   finally { ctx.restore(); }
 };
@@ -4697,6 +4771,181 @@ M.hidesBg = (plan, t) => {
   if (!plan || !plan.media || plan.media.lyricBg === 'over') return false;
   const c = M.cutAt(plan, t, 'back');
   return !!(c && J.mediaAssets.has(c.assetId));
+};
+})();
+
+/* ============================================================
+   my-jizura (fork) — media layer: 加工 (colour treatments) and 文字の下の暗幕 (scrim)   (Phase 3)
+   · M.treated(asset, src, cut, plan, slot) → a canvas with the treatment applied (pictures: made once and kept;
+     clips: redrawn every frame into a kept canvas, at most 1280 px wide). Composite modes only (no ctx.filter).
+   · M.drawScrim(ctx, plan, c, t, W, H, seen, P): a soft veil in the style's background colour behind the lyrics.
+     Where the lyrics sit is measured once per lyric cut (a small render that logs the glyphs) and kept per plan;
+     'auto' decides from a tiny luminance grid of the picture (made once per picture) whether the lyrics need it.
+   ============================================================ */
+(() => {
+'use strict';
+const M = (J.media = J.media || {});
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const fit = (cv, w, h) => { if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } return cv; };
+
+/* ---------------- 加工 ---------------- */
+// the colours a treatment uses: the style's own (first scheme), so pictures sit in the look of the lyrics
+function tones(plan) {
+  const sc = (plan.style && plan.style.schemes && plan.style.schemes[0]) || { bg: '#101014', fg: '#ffffff', accent: '#ff4d6d' };
+  const dark = J.lum(sc.bg) < J.lum(sc.fg) ? sc.bg : sc.fg, light = dark === sc.bg ? sc.fg : sc.bg;
+  const acc = sc.accent || light;
+  return { bg: sc.bg, dark: J.mix(dark, '#000000', 0.25), light: J.lum(acc) > 0.45 ? acc : J.mix(acc, light, 0.45), accent: acc };
+}
+const fill = (x, w, h, op, col, a = 1) => { x.globalCompositeOperation = op; x.globalAlpha = a; x.fillStyle = col; x.fillRect(0, 0, w, h); };
+let blurA = null, blurB = null;
+function paint(cv, src, w, h, kind, T, alpha) {
+  const x = fit(cv, w, h).getContext('2d');
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.filter = 'none'; x.imageSmoothingEnabled = true;
+  x.globalCompositeOperation = 'copy';
+  if (kind === 'blur') {
+    // two steps down and one up: a soft blur without ctx.filter (cheap, and the same in every browser)
+    const a = fit(blurA || (blurA = mk(2, 2)), Math.max(2, Math.round(w / 4)), Math.max(2, Math.round(h / 4)));
+    const b = fit(blurB || (blurB = mk(2, 2)), Math.max(2, Math.round(w / 14)), Math.max(2, Math.round(h / 14)));
+    const ax = a.getContext('2d'), bx = b.getContext('2d');
+    ax.globalCompositeOperation = 'copy'; ax.imageSmoothingQuality = 'high'; ax.drawImage(src, 0, 0, a.width, a.height);
+    bx.globalCompositeOperation = 'copy'; bx.imageSmoothingQuality = 'high'; bx.drawImage(a, 0, 0, b.width, b.height);
+    x.imageSmoothingQuality = 'high'; x.drawImage(b, 0, 0, w, h);
+  } else x.drawImage(src, 0, 0, w, h);
+  if (kind === 'mono' || kind === 'sepia' || kind === 'duotone') fill(x, w, h, 'saturation', '#808080');   // keeps the brightness, drops the colour
+  if (kind === 'sepia') fill(x, w, h, 'color', '#9a7350', 0.85);
+  if (kind === 'duotone') { fill(x, w, h, 'multiply', T.light); fill(x, w, h, 'screen', T.dark); }
+  if (kind === 'match') { fill(x, w, h, 'color', T.accent, 0.32); fill(x, w, h, 'soft-light', T.bg, 0.35); }
+  if (alpha) { x.globalAlpha = 1; x.globalCompositeOperation = 'destination-in'; x.drawImage(src, 0, 0, w, h); }   // see-through stays see-through
+  x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
+  return cv;
+}
+const kept = new WeakMap();   // picture copy → Map(treatment key → canvas)
+M.treated = (asset, src, c, plan, slot = 0) => {
+  const kind = c.treat;
+  if (!kind || kind === 'none' || !src) return src;
+  const T = tones(plan);
+  if (asset.type !== 'video') {
+    const key = kind + '|' + T.bg + T.dark + T.light + T.accent;
+    let m = kept.get(src); if (!m) kept.set(src, (m = new Map()));
+    if (!m.has(key)) m.set(key, paint(mk(2, 2), src, src.width, src.height, kind, T, true));
+    return m.get(key);
+  }
+  // a clip frame: into the clip's own canvas (one per slot: the seam of a loop draws two frames)
+  const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+  if (!sw || !sh) return src;
+  const k = Math.min(1, 1280 / sw), cvs = asset.treatCv || (asset.treatCv = []);
+  return paint(cvs[slot] || (cvs[slot] = mk(2, 2)), src, Math.round(sw * k), Math.round(sh * k), kind, T, false);
+};
+
+/* ---------------- 文字の下の暗幕 ---------------- */
+let measuring = false;
+M.measuring = () => measuring;
+const boxes = new WeakMap();  // plan → Map(lyric cut index → box | null, 'n:<media>:<lyric>' → needs a veil)
+const store = plan => { let m = boxes.get(plan); if (!m) boxes.set(plan, (m = new Map())); return m; };
+let mR = null, mCv = null;
+/* where the lyrics of one lyric cut sit (design units), from a small render of the lyrics alone (the front layer) that logs every glyph */
+function lyricBox(plan, lc) {
+  const S = store(plan);
+  if (S.has(lc.index)) return S.get(lc.index);
+  let box = null;
+  if (!measuring) {
+    measuring = true;
+    try {
+      const k = 0.2, log = [];
+      const cv = fit(mCv || (mCv = mk(2, 2)), Math.max(2, Math.round(plan.W * k)), Math.max(2, Math.round(plan.H * k)));
+      (mR || (mR = new J.Renderer())).frame(cv.getContext('2d'), plan, (lc.start + lc.end) / 2, { scale: k, noPost: true, noHud: true, noTrans: true, noGhost: true, fast: true, glyphLog: log, transparent: true, layer: 'front' });
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      const gl = log.filter(g => g.a > 0.3 && g.m).map(g => ({ s: (g.px || 0) * Math.hypot(g.m[0], g.m[1]) / k, cx: g.m[4] / k, cy: g.m[5] / k })).filter(g => g.s > 0);
+      const big = gl.reduce((m, g) => Math.max(m, g.s), 0);
+      for (const g of gl) {
+        if (g.s < big * 0.35) continue;          // the lyric itself, not the small labels / captions around it
+        x0 = Math.min(x0, g.cx - g.s * 0.6); x1 = Math.max(x1, g.cx + g.s * 0.6); y0 = Math.min(y0, g.cy - g.s * 0.6); y1 = Math.max(y1, g.cy + g.s * 0.6);
+      }
+      if (x1 > x0 && y1 > y0) box = { x: Math.max(0, x0), y: Math.max(0, y0), w: Math.min(plan.W, x1) - Math.max(0, x0), h: Math.min(plan.H, y1) - Math.max(0, y0) };
+    } catch (e) { console.warn('media: scrim measure', e); }
+    finally { measuring = false; }
+  }
+  S.set(lc.index, box);
+  return box;
+}
+// relative luminance (WCAG) of a picture as a small grid, made once per picture
+const linear = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+function lumGrid(a) {
+  if (a.lumGrid) return a.lumGrid;
+  const src = a.type === 'video' ? a.thumb : a.source;
+  if (!src) return null;
+  const sw = a.type === 'video' ? src.width : a.sw, sh = a.type === 'video' ? src.height : a.sh;
+  const gw = 32, gh = J.clamp(Math.round(32 * sh / sw), 4, 64);
+  try {
+    const cv = mk(gw, gh), x = cv.getContext('2d', { willReadFrequently: true });
+    x.drawImage(src, 0, 0, gw, gh);
+    const d = x.getImageData(0, 0, gw, gh).data, g = new Float32Array(gw * gh);
+    for (let i = 0; i < g.length; i++) g[i] = 0.2126 * linear(d[i * 4]) + 0.7152 * linear(d[i * 4 + 1]) + 0.0722 * linear(d[i * 4 + 2]);
+    return (a.lumGrid = { gw, gh, g, aspect: sw / sh });
+  } catch (e) { return null; }
+}
+/* does the picture under the lyrics leave them hard to read? (contrast of the text colour with the darkened picture) */
+function needsVeil(plan, c, box, sc, dim) {
+  const a = J.mediaAssets.get(c.assetId), G = a && lumGrid(a);
+  if (!G) return false;
+  const W = plan.W, H = plan.H, ar = G.aspect;
+  const base = c.fit === 'contain' ? Math.min(W / ar, H) : Math.max(W / ar, H);
+  const dw = ar * base, dh = base, ox = (W - dw) / 2, oy = (H - dh) / 2;
+  let sum = 0, n = 0;
+  for (let j = 0; j < G.gh; j++) for (let i = 0; i < G.gw; i++) {
+    const cx = ox + (i + 0.5) / G.gw * dw, cy = oy + (j + 0.5) / G.gh * dh;
+    if (cx < box.x || cx > box.x + box.w || cy < box.y || cy > box.y + box.h) continue;
+    sum += G.g[j * G.gw + i]; n++;
+  }
+  if (!n) return false;
+  const pic = (sum / n) * (1 - dim), txt = (() => { const c2 = J.hex(sc.fg).map(linear); return 0.2126 * c2[0] + 0.7152 * c2[1] + 0.0722 * c2[2]; })();
+  return (Math.max(pic, txt) + 0.05) / (Math.min(pic, txt) + 0.05) < 4.5;
+}
+// a soft-edged plate (made once per colour), stretched over the lyrics
+const plates = new Map();
+function plate(col) {
+  if (plates.has(col)) return plates.get(col);
+  const w = 96, h = 64, cv = mk(w, h), x = cv.getContext('2d'), im = x.createImageData(w, h), [r, g, b] = J.hex(col);
+  const edge = 0.32, sm = e => e * e * (3 - 2 * e);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const u = Math.min((i + 0.5) / w, 1 - (i + 0.5) / w) / edge, v = Math.min((j + 0.5) / h, 1 - (j + 0.5) / h) / edge;
+    const k = (j * w + i) * 4;
+    im.data[k] = r; im.data[k + 1] = g; im.data[k + 2] = b; im.data[k + 3] = Math.round(255 * sm(J.clamp(u)) * sm(J.clamp(v)));
+  }
+  x.putImageData(im, 0, 0);
+  plates.set(col, cv);
+  return cv;
+}
+M.drawScrim = (ctx, plan, c, t, W, H, seen, P) => {
+  const S = plan.media && plan.media.scrim;
+  if (!S || S.mode === 'off' || !(S.amount > 0) || !(seen > 0) || measuring) return;
+  const lc = J.cutAt(plan, t);
+  if (!lc || !(lc.end > lc.start)) return;
+  // the plate of one lyric cut, or null when it has none (no lyric, or 'auto' and the lyric reads well)
+  const want = L => {
+    const box = lyricBox(plan, L);
+    if (!box) return null;
+    const sc = plan.style.schemes[L.scheme % plan.style.schemes.length] || plan.style.schemes[0];
+    if (S.mode === 'auto') {
+      const st = store(plan), key = 'n:' + c.index + ':' + L.index;
+      if (!st.has(key)) st.set(key, needsVeil(plan, c, box, sc, P.dim || 0));
+      if (!st.get(key)) return null;
+    }
+    return { box, col: sc.bg };
+  };
+  const touch = (a, b) => a && b && Math.abs(a.end - b.start) < 0.06;
+  const prev = lc.index > 0 ? plan.cuts[lc.index - 1] : null, next = plan.cuts[lc.index + 1];
+  const F = 0.3, pad = Math.min(W, H) * 0.09, cur = want(lc);
+  // in with the line and out with it; from one lyric cut to the next, the plate moves over instead of blinking
+  const kin = J.clamp((t - lc.start) / F), kout = touch(lc, next) && want(next) ? 1 : J.clamp((lc.end - t) / F);
+  const draw = (pl, k) => {
+    if (!pl || !(k > 0)) return;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = J.clamp(S.amount * k * Math.min(1, seen) * 1.5);   // the plate's soft edge takes some away
+    ctx.drawImage(plate(pl.col), pl.box.x - pad, pl.box.y - pad * 0.8, pl.box.w + pad * 2, pl.box.h + pad * 1.6);
+  };
+  if (kin < 1 && touch(prev, lc)) draw(want(prev), 1 - kin);
+  draw(cur, Math.min(kin, kout));
 };
 })();
 
@@ -4713,9 +4962,16 @@ M.ID = /^[\w-]{1,32}$/;
 M.TRACKS = ['back', 'front'];
 M.TYPES = ['image', 'video'];
 M.FIT = ['cover', 'contain'];
-M.ENTER = ['auto', 'cut', 'fade'];
-M.HOLD = ['auto', 'still', 'kenburns'];
-M.EXIT = ['auto', 'cut', 'fade'];
+// 登場・退場 (when no picture touches this one), 動き, 加工 (Phase 3)
+M.ENTER = ['auto', 'cut', 'fade', 'slide', 'zoom', 'wipe'];
+M.HOLD = ['auto', 'still', 'kenburns', 'pan', 'push', 'drift', 'beatPulse'];
+M.EXIT = ['auto', 'cut', 'fade', 'slide', 'zoom', 'wipe'];
+M.TREAT = ['none', 'mono', 'sepia', 'blur', 'duotone', 'match'];
+// つなぎ (one picture to the next): a cross-fade, a hard cut, a mix of the lyric transitions below (seeded), or one of them
+M.JOIN = ['fade', 'cut', 'mix'];
+M.TRANS_KEYS = ['wipe', 'diagonalWipe', 'clockWipe', 'irisOpen', 'pushSlide', 'cover', 'uncover', 'zoomThrough', 'doorsOpen', 'blinds',
+  'whipPan', 'inkBlob', 'flashCross', 'pixelate', 'sliceShift', 'blockDissolve'];
+M.SCRIM = ['off', 'auto', 'always'];        // 文字の下の暗幕: auto = only where the picture makes the lyrics hard to read
 M.BLEND = ['normal', 'multiply', 'screen', 'overlay'];
 M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.BG) where a background image shows
 M.AUTO = ['off', 'perLine'];
@@ -4736,10 +4992,11 @@ M.defaults = () => ({
     front: { cuts: [], opacity: 1, blend: 'normal', dim: 0 },
   },
   autoFill: {
-    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns', video: { extend: 'loop', rate: 1, beats: 4 } },
-    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', video: { extend: 'loop', rate: 1, beats: 4 } },
+    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns', enter: 'fade', exit: 'fade', trans: 'fade', treat: 'none', video: { extend: 'loop', rate: 1, beats: 4 } },
+    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', enter: 'fade', exit: 'fade', trans: 'fade', treat: 'none', video: { extend: 'loop', rate: 1, beats: 4 } },
   },
   lyricBg: 'off',
+  scrim: { mode: 'auto', amount: 0.55 },
 });
 
 const num = (v, lo, hi, d) => { const n = +v; return Number.isFinite(n) ? J.clamp(n, lo, hi) : d; };
@@ -4766,6 +5023,7 @@ function cut(c, i) {
     fit: pick(c.fit, M.FIT.concat(['auto']), 'auto'),
     enter: pick(c.enter, M.ENTER, 'auto'), hold: pick(c.hold, M.HOLD, 'auto'), exit: pick(c.exit, M.EXIT, 'auto'),
     opacity: num(c.opacity, 0, 1, 1),
+    treat: pick(c.treat, ['auto'].concat(M.TREAT), 'auto'), trans: join(c.trans, 'auto'),
   };
   if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
   if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
@@ -4782,6 +5040,8 @@ function video(v, d) {
   if (v.beats != null || d) o.beats = [1, 2, 4, 8, 16].includes(+v.beats) ? +v.beats : (d ? d.beats : 4);
   return o;
 }
+/* つなぎ: 'auto' (cuts only), fade / cut / mix, or a transition key (checked against J.TRANS when the plan is made) */
+function join(v, d) { return v === 'auto' || M.JOIN.includes(v) || M.TRANS_KEYS.includes(v) ? v : d; }
 function track(t, d) {
   t = isObj(t) ? t : {};
   return {
@@ -4791,8 +5051,10 @@ function track(t, d) {
 }
 function auto(a, d) {
   a = isObj(a) ? a : {};
+  const no = l => l.filter(k => k !== 'auto');
   return { mode: pick(a.mode, M.AUTO, d.mode), order: pick(a.order, M.ORDER, d.order), seed: int(a.seed, 0, 2 ** 31 - 1, d.seed),
-    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold), video: video(a.video, d.video) };
+    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, no(M.HOLD), d.hold), enter: pick(a.enter, no(M.ENTER), d.enter), exit: pick(a.exit, no(M.EXIT), d.exit),
+    trans: join(a.trans === 'auto' ? null : a.trans, d.trans), treat: pick(a.treat, M.TREAT, d.treat), video: video(a.video, d.video) };
 }
 
 /* untrusted input → a complete, valid project.media */
@@ -4802,7 +5064,9 @@ M.normalize = m => {
   const seen = new Set(), assets = [];
   for (const a of (Array.isArray(m.assets) ? m.assets : []).slice(0, M.MAX_ASSETS)) { const o = asset(a); if (o && !seen.has(o.id)) { seen.add(o.id); assets.push(o); } }
   const tr = isObj(m.tracks) ? m.tracks : {}, af = isObj(m.autoFill) ? m.autoFill : {};
-  const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg) };
+  const sc = isObj(m.scrim) ? m.scrim : {};
+  const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg),
+    scrim: { mode: pick(sc.mode, M.SCRIM, d.scrim.mode), amount: num(sc.amount, 0, 0.9, d.scrim.amount) } };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
   // a cut may only point at an asset of this project ('' = deliberately none); cuts of a picture that is gone are dropped
   for (const k of M.TRACKS) out.tracks[k].cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
@@ -4816,7 +5080,8 @@ M.assetById = (project, id) => ((project && project.media && project.media.asset
    my-jizura (fork) — media layer: project.media → plan.media
    Deterministic: the same project + lyrics timing always gives the same media cuts.
    plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
-   cut = { index, assetId, start, end, dur, line, fit, enter, hold, exit, inDur, outDur, opacity, seed, kb }
+   cut = { index, assetId, type, start, end, dur, line, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v }
+   join: how it takes over from the picture right before ('fade' / 'cut' / a J.TRANS key), null when nothing touches it
    ============================================================ */
 (() => {
 'use strict';
@@ -4876,25 +5141,50 @@ function resolveTrack(m, k, plan) {
     if (p && !p.src && !s.src && p.assetId === s.assetId && Math.abs(p.end - s.start) < NEAR) p.end = s.end;
     else merged.push(s);
   }
+  const transKeys = M.TRANS_KEYS.filter(k => J.TRANS && J.TRANS[k]);
   merged.forEach((s, i) => {
-    const src = s.src, nxt = merged[i + 1];
+    const src = s.src, prv = merged[i - 1], nxt = merged[i + 1];
     const dur = s.end - s.start;
     const own = (key, dflt) => (src && src[key] && src[key] !== 'auto' ? src[key] : dflt);
     const seed = src && src.seed != null ? src.seed : J.h(A.seed, J.sid(s.assetId), Math.round(s.start * 100));
-    const enter = own('enter', 'fade');
-    const exit = own('exit', nxt && Math.abs(nxt.start - s.end) < NEAR ? 'cut' : 'fade');   // the next image fades in over this one
+    const touchPrev = !!(prv && Math.abs(prv.end - s.start) < NEAR), touchNext = !!(nxt && Math.abs(nxt.start - s.end) < NEAR);
     const r = J.rng(J.h(seed, 0x6b62));
     const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
     const a = meta.get(s.assetId) || {}, isVideo = a.type === 'video';
+    // a second stream for everything added in Phase 3 (the slow zoom above keeps its numbers)
+    const r2 = J.rng(J.h(seed, 0x6d76));
+    const dir = r2.pick(['L', 'R', 'L', 'R', 'U', 'D']);
+    // つなぎ: a picture that follows another one takes over by a cross-fade, a hard cut or a transition (J.TRANS);
+    // 登場: otherwise it comes in by itself
+    let join = null, enter, inDur, transP = null;
+    if (touchPrev) {
+      let j = own('trans', src && src.enter === 'cut' ? 'cut' : A.trans);
+      if (j === 'mix') j = transKeys.length && !r2.chance(0.3) ? r2.pick(transKeys) : 'fade';
+      if (j !== 'fade' && j !== 'cut' && !(J.TRANS && J.TRANS[j])) j = 'fade';
+      join = j;
+      if (j === 'fade') { enter = 'fade'; inDur = Math.min(0.6, dur * 0.3); }
+      else if (j === 'cut') { enter = 'cut'; inDur = 0; }
+      else {
+        const TD = J.TRANS[j];
+        enter = 'cut'; inDur = Math.min(dur * 0.4, Math.max(0.45, (TD.dur || 0.35) * 1.5));
+        try { transP = TD.plan ? TD.plan(J.rng(J.h(seed, 0x7470)), plan.style) : {}; } catch (e) { transP = {}; }
+      }
+    } else {
+      enter = own('enter', A.enter || 'fade');
+      inDur = enter === 'cut' ? 0 : Math.min(enter === 'fade' ? 0.6 : 0.7, dur * 0.3);
+    }
+    const exit = touchNext ? 'cut' : own('exit', A.exit || 'fade');     // the next picture takes over from this one
+    const outDur = exit === 'cut' ? 0 : Math.min(exit === 'fade' ? 0.45 : 0.6, dur * 0.25);
     out.cuts.push({
       index: i, assetId: s.assetId, type: isVideo ? 'video' : 'image', start: s.start, end: s.end, dur, line: s.line,
       fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
+      join, transP, inDur, outDur, dir, treat: own('treat', A.treat || 'none'),
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
-      inDur: enter === 'fade' ? Math.min(0.6, dur * 0.3) : 0,
-      outDur: exit === 'fade' ? Math.min(0.45, dur * 0.25) : 0,
       opacity: src ? src.opacity : 1, seed,
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
+      // パン / 漂う: which way, and where the float starts
+      hp: { sign: r2.chance(0.5) ? 1 : -1, ph: r2.range(0, Math.PI * 2), per: r2.range(6, 9) },
     });
   });
   return out;
@@ -4944,7 +5234,7 @@ function barStart(plan, c, t, n) {
 M.resolve = (project, plan) => {
   if (!project || !project.media) return null;
   const m = M.normalize(project.media);          // cheap, and plans built from test / preview projects get the same checks
-  const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off' };
+  const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off', scrim: Object.assign({}, m.scrim) };
   for (const k of M.TRACKS) out[k] = resolveTrack(m, k, plan);
   return out;
 };
@@ -5193,7 +5483,7 @@ function needed(plan, t) {
     const c = M.cutAt(plan, t, k);
     const add = cut => { if (!cut || cut.type !== 'video') return; const vt = M.videoTimes(plan, cut, t); if (!vt) return; if (!out.has(cut.assetId)) out.set(cut.assetId, []); out.get(cut.assetId).push({ c: cut, vt }); };
     add(c);
-    if (c && c.index > 0 && c.enter === 'fade' && t - c.start < c.inDur) { const p = P.cuts[c.index - 1]; if (Math.abs(p.end - c.start) < 0.06) add(p); }
+    if (c && c.index > 0 && c.join && c.join !== 'cut' && t - c.start < c.inDur) add(P.cuts[c.index - 1]);   // the picture it takes over from
     const nx = c ? P.cuts[c.index + 1] : P.cuts.find(x => x.start > t);
     if (nx && nx.type === 'video' && nx.start - t < 2) next.add(nx.assetId);
   }
@@ -36648,7 +36938,8 @@ if (typeof document !== 'undefined') {
 })();
 
 /* ============================================================
-   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures, Phase 2: video clips)
+   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures, Phase 2: video clips,
+   Phase 3: 登場・つなぎ・動き・加工・暗幕 and メディアのおまかせ)
    · a 「画像・動画」 section above 「行とカット」 (built here, so app/body.html stays as upstream ships it)
    · a picture selector on every lyric line, a strip for the pictures on the timeline
    12_ui.js calls: J.mediaUI.init(api) in boot(), onPlan() at the end of replan(),
@@ -36702,24 +36993,50 @@ function section() {
       </div>
       <div class="media-opts" style="margin-top:8px">
         <label class="field">${L('順番', 'Order')}<select id="mediaOrder"><option value="sequential">${L('追加した順', 'As added')}</option><option value="random">${L('ランダム', 'Random')}</option></select></label>
-        <label class="field">${L('動き', 'Motion')}<select id="mediaHold"><option value="kenburns">${L('ゆっくり動かす', 'Slow zoom / pan')}</option><option value="still">${L('止める', 'Still')}</option></select></label>
+        <label class="field">${L('動き', 'Motion')}<select id="mediaHold">${opts(HOLDS)}</select></label>
         <label class="field">${L('写し方', 'Fit')}<select id="mediaFit"><option value="cover">${L('画面いっぱい', 'Fill the frame')}</option><option value="contain">${L('全体を表示', 'Show it whole')}</option></select></label>
         <label class="field">${L('暗さ', 'Darken')} <span id="mediaDimVal" class="mono"></span><input id="mediaDim" type="range" min="0" max="0.8" step="0.05"></label>
+        <label class="field">${L('つなぎ', 'Between pictures')}<select id="mediaTrans">${opts(JOINS)}<optgroup label="${L('切り替え効果', 'Transitions')}">${M.TRANS_KEYS.filter(k => J.TRANS && J.TRANS[k]).map(k => `<option value="${k}">${esc(J.TRANS[k].name || k)}</option>`).join('')}</optgroup></select></label>
+        <label class="field">${L('登場・退場', 'In / out')}<select id="mediaEnter">${opts(ENTERS)}</select></label>
+        <label class="field">${L('加工', 'Treatment')}<select id="mediaTreat">${opts(TREATS)}</select></label>
+        <label class="field" title="${L('写真が明るくて歌詞が読みにくいところで、歌詞の後ろだけをやわらかく暗くします', 'A soft plate behind the lyrics where the picture makes them hard to read')}">${L('文字の下の暗幕', 'Plate behind lyrics')}<select id="mediaScrim">${opts(SCRIMS)}</select></label>
       </div>
       <div id="mediaVideo" class="media-opts media-video" style="margin-top:8px" hidden>
         <label class="field">${L('動画が短いとき', 'When a clip is short')}<select id="mediaExtend"><option value="loop">${L('くり返す', 'Loop')}</option><option value="pingpong">${L('往復する', 'Ping-pong')}</option><option value="hold">${L('最後で止める', 'Hold the last frame')}</option><option value="beat">${L('小節ごとに頭から', 'Restart every bar')}</option></select></label>
         <label class="field">${L('動画の速さ', 'Clip speed')}<select id="mediaRate">${[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => `<option value="${r}">${r}×</option>`).join('')}</select></label>
         <label class="field" id="mediaBeatsWrap">${L('頭出しの間隔', 'Restart every')}<select id="mediaBeats">${[1, 2, 4, 8, 16].map(n => `<option value="${n}">${n} ${L('拍', n > 1 ? 'beats' : 'beat')}</option>`).join('')}</select></label>
       </div>
-      <div class="row" style="margin-top:8px"><button id="mediaShuffle" class="ghost small" title="${L('ランダムの並びを作り直します', 'Shuffle the random order again')}">${L('並べ直す', 'Reshuffle')}</button></div>
+      <div class="row" style="margin-top:8px;gap:6px"><button id="mediaOmakase" class="ghost small accent" title="${L('動き・つなぎ・登場・加工・暗さ・並びをまとめておまかせで決めます（押すたびに別の案）', 'Pick motion, transitions, in / out, treatment, darkness and order at random (another idea each time)')}">${L('メディアのおまかせ', 'Shuffle the look')}</button><button id="mediaShuffle" class="ghost small" title="${L('ランダムの並びを作り直します', 'Shuffle the random order again')}">${L('並べ直す', 'Reshuffle')}</button></div>
     </div>
     <div id="mediaNote" class="media-note" aria-live="polite"></div>`;
   return sec;
 }
 
+const HOLDS = [['kenburns', 'ゆっくり寄る・引く', 'Slow zoom'], ['pan', '横に流す', 'Pan across'], ['push', 'ぐっと寄る', 'Push in'], ['drift', '漂う', 'Drift'],
+  ['beatPulse', '拍で脈打つ', 'Pulse on the beat'], ['still', '止める', 'Still']];
+const JOINS = [['fade', 'クロスフェード', 'Cross-fade'], ['cut', 'パッと切り替え', 'Hard cut'], ['mix', 'いろいろ（おまかせ）', 'A mix']];
+const ENTERS = [['fade', 'フェード', 'Fade'], ['slide', 'スライド', 'Slide'], ['zoom', 'ズーム', 'Zoom'], ['wipe', 'ワイプ', 'Wipe'], ['cut', 'なし', 'None']];
+const TREATS = [['none', 'そのまま', 'None'], ['match', 'スタイルの色に寄せる', 'Match the style'], ['mono', 'モノクロ', 'Black & white'], ['sepia', 'セピア', 'Sepia'],
+  ['duotone', '2 色トーン', 'Duotone'], ['blur', 'ぼかす', 'Blur']];
+const SCRIMS = [['auto', '読みにくいときだけ', 'When needed'], ['always', 'いつも', 'Always'], ['off', 'なし', 'Off']];
+function opts(list) { return list.map(([v, ja, en]) => `<option value="${v}">${L(ja, en)}</option>`).join(''); }
 const media = () => S.project.media || (S.project.media = M.defaults());
 const back = () => media().tracks.back;
 const autoB = () => media().autoFill.back;
+/* メディアのおまかせ: motion, transitions, in / out, treatment, darkness and order together (a new idea each press) */
+M.randomLook = (m, beats) => {
+  const R = Math.random, w = list => { let s = list.reduce((x, [, k]) => x + k, 0) * R(); for (const [v, k] of list) if ((s -= k) <= 0) return v; return list[0][0]; };
+  const A = m.autoFill.back;
+  A.hold = w([['kenburns', 4], ['pan', 2], ['push', 1.5], ['drift', 2], ['beatPulse', beats ? 1.5 : 0], ['still', 0.7]]);
+  A.trans = w([['fade', 3], ['mix', 3], ['cut', 0.8], ...M.TRANS_KEYS.filter(k => J.TRANS && J.TRANS[k]).map(k => [k, 0.25])]);
+  A.enter = A.exit = w([['fade', 3], ['slide', 1], ['zoom', 1], ['wipe', 1]]);
+  A.treat = w([['none', 4], ['match', 2], ['mono', 1], ['duotone', 1], ['sepia', 0.6], ['blur', 0.3]]);
+  if (R() < 0.5) { A.order = 'random'; A.seed = Math.floor(R() * 1e6); }
+  m.tracks.back.dim = Math.round((0.15 + R() * 0.25) * 20) / 20;
+  m.scrim = Object.assign({ amount: 0.55 }, m.scrim, { mode: 'auto' });
+  const nm = (list, v) => { const o = list.find(x => x[0] === v); return o ? L(o[1], o[2]) : (J.TRANS[v] && J.TRANS[v].name) || v; };
+  return [nm(HOLDS, A.hold), nm(JOINS, A.trans), nm(TREATS, A.treat)].join('・');
+};
 function changed(msg) { api.replan(); if (msg) api.toast(msg); }
 function note(text, warn) { const n = $('mediaNote'); if (!n) return; n.textContent = text || ''; n.classList.toggle('warn', !!warn); }
 
@@ -36803,6 +37120,8 @@ function syncControls() {
   $('mediaAuto').checked = A.mode === 'perLine';
   $('mediaLyricBg').checked = m.lyricBg === 'over';
   $('mediaOrder').value = A.order; $('mediaHold').value = A.hold; $('mediaFit').value = A.fit;
+  $('mediaTrans').value = A.trans || 'fade'; $('mediaEnter').value = A.enter || 'fade'; $('mediaTreat').value = A.treat || 'none';
+  $('mediaScrim').value = (m.scrim && m.scrim.mode) || 'auto';
   $('mediaDim').value = String(B.dim); $('mediaDimVal').textContent = Math.round(B.dim * 100) + '%';
   $('mediaShuffle').hidden = A.order !== 'random';
   const V = A.video || { extend: 'loop', rate: 1, beats: 4 };
@@ -36834,6 +37153,11 @@ function bind(sec) {
   $('mediaOrder').addEventListener('change', e => { autoB().order = e.target.value; changed(); });
   $('mediaHold').addEventListener('change', e => { autoB().hold = e.target.value; changed(); });
   $('mediaFit').addEventListener('change', e => { autoB().fit = e.target.value; changed(); });
+  $('mediaTrans').addEventListener('change', e => { autoB().trans = e.target.value; changed(); });
+  $('mediaEnter').addEventListener('change', e => { autoB().enter = autoB().exit = e.target.value; changed(); });
+  $('mediaTreat').addEventListener('change', e => { autoB().treat = e.target.value; changed(); });
+  $('mediaScrim').addEventListener('change', e => { media().scrim = Object.assign({ amount: 0.55 }, media().scrim, { mode: e.target.value }); changed(); });
+  $('mediaOmakase').addEventListener('click', () => { const r = M.randomLook(media(), !!(S.plan && S.plan.beats && S.plan.beats.length)); changed(L(`メディアのおまかせ：${r}`, `Look: ${r}`)); });
   const vset = (k, v) => { const A = autoB(); A.video = Object.assign({ extend: 'loop', rate: 1, beats: 4 }, A.video, { [k]: v }); changed(); };
   $('mediaExtend').addEventListener('change', e => vset('extend', e.target.value));
   $('mediaRate').addEventListener('change', e => vset('rate', +e.target.value));

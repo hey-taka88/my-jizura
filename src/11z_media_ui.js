@@ -1,5 +1,6 @@
 /* ============================================================
-   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures, Phase 2: video clips)
+   my-jizura (fork) — media layer: editor UI (Phase 1: background pictures, Phase 2: video clips,
+   Phase 3: 登場・つなぎ・動き・加工・暗幕 and メディアのおまかせ)
    · a 「画像・動画」 section above 「行とカット」 (built here, so app/body.html stays as upstream ships it)
    · a picture selector on every lyric line, a strip for the pictures on the timeline
    12_ui.js calls: J.mediaUI.init(api) in boot(), onPlan() at the end of replan(),
@@ -53,24 +54,50 @@ function section() {
       </div>
       <div class="media-opts" style="margin-top:8px">
         <label class="field">${L('順番', 'Order')}<select id="mediaOrder"><option value="sequential">${L('追加した順', 'As added')}</option><option value="random">${L('ランダム', 'Random')}</option></select></label>
-        <label class="field">${L('動き', 'Motion')}<select id="mediaHold"><option value="kenburns">${L('ゆっくり動かす', 'Slow zoom / pan')}</option><option value="still">${L('止める', 'Still')}</option></select></label>
+        <label class="field">${L('動き', 'Motion')}<select id="mediaHold">${opts(HOLDS)}</select></label>
         <label class="field">${L('写し方', 'Fit')}<select id="mediaFit"><option value="cover">${L('画面いっぱい', 'Fill the frame')}</option><option value="contain">${L('全体を表示', 'Show it whole')}</option></select></label>
         <label class="field">${L('暗さ', 'Darken')} <span id="mediaDimVal" class="mono"></span><input id="mediaDim" type="range" min="0" max="0.8" step="0.05"></label>
+        <label class="field">${L('つなぎ', 'Between pictures')}<select id="mediaTrans">${opts(JOINS)}<optgroup label="${L('切り替え効果', 'Transitions')}">${M.TRANS_KEYS.filter(k => J.TRANS && J.TRANS[k]).map(k => `<option value="${k}">${esc(J.TRANS[k].name || k)}</option>`).join('')}</optgroup></select></label>
+        <label class="field">${L('登場・退場', 'In / out')}<select id="mediaEnter">${opts(ENTERS)}</select></label>
+        <label class="field">${L('加工', 'Treatment')}<select id="mediaTreat">${opts(TREATS)}</select></label>
+        <label class="field" title="${L('写真が明るくて歌詞が読みにくいところで、歌詞の後ろだけをやわらかく暗くします', 'A soft plate behind the lyrics where the picture makes them hard to read')}">${L('文字の下の暗幕', 'Plate behind lyrics')}<select id="mediaScrim">${opts(SCRIMS)}</select></label>
       </div>
       <div id="mediaVideo" class="media-opts media-video" style="margin-top:8px" hidden>
         <label class="field">${L('動画が短いとき', 'When a clip is short')}<select id="mediaExtend"><option value="loop">${L('くり返す', 'Loop')}</option><option value="pingpong">${L('往復する', 'Ping-pong')}</option><option value="hold">${L('最後で止める', 'Hold the last frame')}</option><option value="beat">${L('小節ごとに頭から', 'Restart every bar')}</option></select></label>
         <label class="field">${L('動画の速さ', 'Clip speed')}<select id="mediaRate">${[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => `<option value="${r}">${r}×</option>`).join('')}</select></label>
         <label class="field" id="mediaBeatsWrap">${L('頭出しの間隔', 'Restart every')}<select id="mediaBeats">${[1, 2, 4, 8, 16].map(n => `<option value="${n}">${n} ${L('拍', n > 1 ? 'beats' : 'beat')}</option>`).join('')}</select></label>
       </div>
-      <div class="row" style="margin-top:8px"><button id="mediaShuffle" class="ghost small" title="${L('ランダムの並びを作り直します', 'Shuffle the random order again')}">${L('並べ直す', 'Reshuffle')}</button></div>
+      <div class="row" style="margin-top:8px;gap:6px"><button id="mediaOmakase" class="ghost small accent" title="${L('動き・つなぎ・登場・加工・暗さ・並びをまとめておまかせで決めます（押すたびに別の案）', 'Pick motion, transitions, in / out, treatment, darkness and order at random (another idea each time)')}">${L('メディアのおまかせ', 'Shuffle the look')}</button><button id="mediaShuffle" class="ghost small" title="${L('ランダムの並びを作り直します', 'Shuffle the random order again')}">${L('並べ直す', 'Reshuffle')}</button></div>
     </div>
     <div id="mediaNote" class="media-note" aria-live="polite"></div>`;
   return sec;
 }
 
+const HOLDS = [['kenburns', 'ゆっくり寄る・引く', 'Slow zoom'], ['pan', '横に流す', 'Pan across'], ['push', 'ぐっと寄る', 'Push in'], ['drift', '漂う', 'Drift'],
+  ['beatPulse', '拍で脈打つ', 'Pulse on the beat'], ['still', '止める', 'Still']];
+const JOINS = [['fade', 'クロスフェード', 'Cross-fade'], ['cut', 'パッと切り替え', 'Hard cut'], ['mix', 'いろいろ（おまかせ）', 'A mix']];
+const ENTERS = [['fade', 'フェード', 'Fade'], ['slide', 'スライド', 'Slide'], ['zoom', 'ズーム', 'Zoom'], ['wipe', 'ワイプ', 'Wipe'], ['cut', 'なし', 'None']];
+const TREATS = [['none', 'そのまま', 'None'], ['match', 'スタイルの色に寄せる', 'Match the style'], ['mono', 'モノクロ', 'Black & white'], ['sepia', 'セピア', 'Sepia'],
+  ['duotone', '2 色トーン', 'Duotone'], ['blur', 'ぼかす', 'Blur']];
+const SCRIMS = [['auto', '読みにくいときだけ', 'When needed'], ['always', 'いつも', 'Always'], ['off', 'なし', 'Off']];
+function opts(list) { return list.map(([v, ja, en]) => `<option value="${v}">${L(ja, en)}</option>`).join(''); }
 const media = () => S.project.media || (S.project.media = M.defaults());
 const back = () => media().tracks.back;
 const autoB = () => media().autoFill.back;
+/* メディアのおまかせ: motion, transitions, in / out, treatment, darkness and order together (a new idea each press) */
+M.randomLook = (m, beats) => {
+  const R = Math.random, w = list => { let s = list.reduce((x, [, k]) => x + k, 0) * R(); for (const [v, k] of list) if ((s -= k) <= 0) return v; return list[0][0]; };
+  const A = m.autoFill.back;
+  A.hold = w([['kenburns', 4], ['pan', 2], ['push', 1.5], ['drift', 2], ['beatPulse', beats ? 1.5 : 0], ['still', 0.7]]);
+  A.trans = w([['fade', 3], ['mix', 3], ['cut', 0.8], ...M.TRANS_KEYS.filter(k => J.TRANS && J.TRANS[k]).map(k => [k, 0.25])]);
+  A.enter = A.exit = w([['fade', 3], ['slide', 1], ['zoom', 1], ['wipe', 1]]);
+  A.treat = w([['none', 4], ['match', 2], ['mono', 1], ['duotone', 1], ['sepia', 0.6], ['blur', 0.3]]);
+  if (R() < 0.5) { A.order = 'random'; A.seed = Math.floor(R() * 1e6); }
+  m.tracks.back.dim = Math.round((0.15 + R() * 0.25) * 20) / 20;
+  m.scrim = Object.assign({ amount: 0.55 }, m.scrim, { mode: 'auto' });
+  const nm = (list, v) => { const o = list.find(x => x[0] === v); return o ? L(o[1], o[2]) : (J.TRANS[v] && J.TRANS[v].name) || v; };
+  return [nm(HOLDS, A.hold), nm(JOINS, A.trans), nm(TREATS, A.treat)].join('・');
+};
 function changed(msg) { api.replan(); if (msg) api.toast(msg); }
 function note(text, warn) { const n = $('mediaNote'); if (!n) return; n.textContent = text || ''; n.classList.toggle('warn', !!warn); }
 
@@ -154,6 +181,8 @@ function syncControls() {
   $('mediaAuto').checked = A.mode === 'perLine';
   $('mediaLyricBg').checked = m.lyricBg === 'over';
   $('mediaOrder').value = A.order; $('mediaHold').value = A.hold; $('mediaFit').value = A.fit;
+  $('mediaTrans').value = A.trans || 'fade'; $('mediaEnter').value = A.enter || 'fade'; $('mediaTreat').value = A.treat || 'none';
+  $('mediaScrim').value = (m.scrim && m.scrim.mode) || 'auto';
   $('mediaDim').value = String(B.dim); $('mediaDimVal').textContent = Math.round(B.dim * 100) + '%';
   $('mediaShuffle').hidden = A.order !== 'random';
   const V = A.video || { extend: 'loop', rate: 1, beats: 4 };
@@ -185,6 +214,11 @@ function bind(sec) {
   $('mediaOrder').addEventListener('change', e => { autoB().order = e.target.value; changed(); });
   $('mediaHold').addEventListener('change', e => { autoB().hold = e.target.value; changed(); });
   $('mediaFit').addEventListener('change', e => { autoB().fit = e.target.value; changed(); });
+  $('mediaTrans').addEventListener('change', e => { autoB().trans = e.target.value; changed(); });
+  $('mediaEnter').addEventListener('change', e => { autoB().enter = autoB().exit = e.target.value; changed(); });
+  $('mediaTreat').addEventListener('change', e => { autoB().treat = e.target.value; changed(); });
+  $('mediaScrim').addEventListener('change', e => { media().scrim = Object.assign({ amount: 0.55 }, media().scrim, { mode: e.target.value }); changed(); });
+  $('mediaOmakase').addEventListener('click', () => { const r = M.randomLook(media(), !!(S.plan && S.plan.beats && S.plan.beats.length)); changed(L(`メディアのおまかせ：${r}`, `Look: ${r}`)); });
   const vset = (k, v) => { const A = autoB(); A.video = Object.assign({ extend: 'loop', rate: 1, beats: 4 }, A.video, { [k]: v }); changed(); };
   $('mediaExtend').addEventListener('change', e => vset('extend', e.target.value));
   $('mediaRate').addEventListener('change', e => vset('rate', +e.target.value));

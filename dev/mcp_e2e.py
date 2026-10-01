@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BROWSER = sys.argv[sys.argv.index('--browser') + 1] if '--browser' in sys.argv else 'auto'
 KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
-         'set_line_media', 'set_look', 'set_media_options', 'set_output', 'get_plan', 'preview', 'export_mp4'}
+         'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -85,8 +85,13 @@ async def main():
             ok(r['line']['media'] is None and r['line']['choice'] == 'none', f'line 2 → no picture ({r})')
             r = await call('set_look', {'theme': 'ballad', 'variation': 2})
             ok(r['theme'] == 'ballad' and r['mood'] in ('calm', 'emotional'), f'look: {r}')
-            r = await call('set_media_options', {'dim': 0.5, 'hold': 'still'})
-            ok(r['dim'] == 0.5 and r['hold'] == 'still', f'media options: {r}')
+            r = await call('set_media_options', {'dim': 0.5, 'hold': 'still', 'trans': 'wipe', 'treat': 'mono', 'scrim': 'always'})
+            ok(r['dim'] == 0.5 and r['hold'] == 'still' and r['trans'] == 'wipe' and r['treat'] == 'mono' and r['scrim'] == 'always', f'media options: {r}')
+            err, msg = await call('set_media_options', {'trans': 'nope'}, expect_error=True)
+            ok(err and 'trans' in msg, 'an unknown transition is refused')
+            r = await call('media_omakase')
+            ok(bool(r.get('summary')), f"media_omakase: {r.get('summary')}")
+            await call('set_media_options', {'dim': 0.5, 'hold': 'still', 'trans': 'fade', 'treat': 'none', 'scrim': 'off', 'order': 'sequential'})
             p = await call('get_plan')
             ok([l['text'] for l in p['lines']] == LINES and p['lines'][0]['start'] == 2, 'plan: the lines and their times')
             ok([l['media'] for l in p['lines']] == ['01.png', None, '02.png', '03.png'], f"plan: pictures by line {[l['media'] for l in p['lines']]}")

@@ -2,7 +2,8 @@
    my-jizura (fork) — media layer: project.media → plan.media
    Deterministic: the same project + lyrics timing always gives the same media cuts.
    plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
-   cut = { index, assetId, start, end, dur, line, fit, enter, hold, exit, inDur, outDur, opacity, seed, kb }
+   cut = { index, assetId, type, start, end, dur, line, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v }
+   join: how it takes over from the picture right before ('fade' / 'cut' / a J.TRANS key), null when nothing touches it
    ============================================================ */
 (() => {
 'use strict';
@@ -62,25 +63,50 @@ function resolveTrack(m, k, plan) {
     if (p && !p.src && !s.src && p.assetId === s.assetId && Math.abs(p.end - s.start) < NEAR) p.end = s.end;
     else merged.push(s);
   }
+  const transKeys = M.TRANS_KEYS.filter(k => J.TRANS && J.TRANS[k]);
   merged.forEach((s, i) => {
-    const src = s.src, nxt = merged[i + 1];
+    const src = s.src, prv = merged[i - 1], nxt = merged[i + 1];
     const dur = s.end - s.start;
     const own = (key, dflt) => (src && src[key] && src[key] !== 'auto' ? src[key] : dflt);
     const seed = src && src.seed != null ? src.seed : J.h(A.seed, J.sid(s.assetId), Math.round(s.start * 100));
-    const enter = own('enter', 'fade');
-    const exit = own('exit', nxt && Math.abs(nxt.start - s.end) < NEAR ? 'cut' : 'fade');   // the next image fades in over this one
+    const touchPrev = !!(prv && Math.abs(prv.end - s.start) < NEAR), touchNext = !!(nxt && Math.abs(nxt.start - s.end) < NEAR);
     const r = J.rng(J.h(seed, 0x6b62));
     const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
     const a = meta.get(s.assetId) || {}, isVideo = a.type === 'video';
+    // a second stream for everything added in Phase 3 (the slow zoom above keeps its numbers)
+    const r2 = J.rng(J.h(seed, 0x6d76));
+    const dir = r2.pick(['L', 'R', 'L', 'R', 'U', 'D']);
+    // つなぎ: a picture that follows another one takes over by a cross-fade, a hard cut or a transition (J.TRANS);
+    // 登場: otherwise it comes in by itself
+    let join = null, enter, inDur, transP = null;
+    if (touchPrev) {
+      let j = own('trans', src && src.enter === 'cut' ? 'cut' : A.trans);
+      if (j === 'mix') j = transKeys.length && !r2.chance(0.3) ? r2.pick(transKeys) : 'fade';
+      if (j !== 'fade' && j !== 'cut' && !(J.TRANS && J.TRANS[j])) j = 'fade';
+      join = j;
+      if (j === 'fade') { enter = 'fade'; inDur = Math.min(0.6, dur * 0.3); }
+      else if (j === 'cut') { enter = 'cut'; inDur = 0; }
+      else {
+        const TD = J.TRANS[j];
+        enter = 'cut'; inDur = Math.min(dur * 0.4, Math.max(0.45, (TD.dur || 0.35) * 1.5));
+        try { transP = TD.plan ? TD.plan(J.rng(J.h(seed, 0x7470)), plan.style) : {}; } catch (e) { transP = {}; }
+      }
+    } else {
+      enter = own('enter', A.enter || 'fade');
+      inDur = enter === 'cut' ? 0 : Math.min(enter === 'fade' ? 0.6 : 0.7, dur * 0.3);
+    }
+    const exit = touchNext ? 'cut' : own('exit', A.exit || 'fade');     // the next picture takes over from this one
+    const outDur = exit === 'cut' ? 0 : Math.min(exit === 'fade' ? 0.45 : 0.6, dur * 0.25);
     out.cuts.push({
       index: i, assetId: s.assetId, type: isVideo ? 'video' : 'image', start: s.start, end: s.end, dur, line: s.line,
       fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
+      join, transP, inDur, outDur, dir, treat: own('treat', A.treat || 'none'),
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
-      inDur: enter === 'fade' ? Math.min(0.6, dur * 0.3) : 0,
-      outDur: exit === 'fade' ? Math.min(0.45, dur * 0.25) : 0,
       opacity: src ? src.opacity : 1, seed,
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
+      // パン / 漂う: which way, and where the float starts
+      hp: { sign: r2.chance(0.5) ? 1 : -1, ph: r2.range(0, Math.PI * 2), per: r2.range(6, 9) },
     });
   });
   return out;
@@ -130,7 +156,7 @@ function barStart(plan, c, t, n) {
 M.resolve = (project, plan) => {
   if (!project || !project.media) return null;
   const m = M.normalize(project.media);          // cheap, and plans built from test / preview projects get the same checks
-  const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off' };
+  const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off', scrim: Object.assign({}, m.scrim) };
   for (const k of M.TRACKS) out[k] = resolveTrack(m, k, plan);
   return out;
 };

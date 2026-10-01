@@ -77,7 +77,8 @@ tool_timeout_sec = 1800
 | `add_media` / `remove_media` | 画像・動画を足す（フォルダなら名前順）・外す |
 | `set_line_media` | 行ごとの画像（名前・番号・`none`＝画像なし・`auto`＝順番） |
 | `set_look` | 見た目：テーマのおまかせ、案の番号（同じ番号なら同じ見た目）、スタイル・雰囲気の固定 |
-| `set_media_options` | 画像の並び・ゆっくり寄る／止める・暗さ、短い動画の伸ばし方（ループ・往復・止める・拍で頭出し） |
+| `set_media_options` | 画像の並び・動き（寄る・流す・漂う・拍で脈打つ…）・つなぎ（クロスフェード・切り替え効果）・登場退場・加工（モノクロ・2 色トーン…）・暗さ・文字の下の暗幕、短い動画の伸ばし方（ループ・往復・止める・拍で頭出し） |
+| `media_omakase` | 「メディアのおまかせ」：動き・つなぎ・登場・加工・暗さ・並びをまとめて決める（呼ぶたびに別の案） |
 | `set_output` | 画面比・解像度・fps・画質 |
 | `get_plan` | 各行の時刻・歌詞・表示される画像、見た目、曲の情報 |
 | `preview` | その時刻のフレームを画像で返す（モデルが見て判断できる） |
@@ -93,7 +94,8 @@ tool_timeout_sec = 1800
 ### 頼み方の例
 
 - 「`list_files` で中身を見て、`song.mp3` と `suno.json` と `pics` フォルダで 16:9 を作って。テーマはバラード」
-- 「4 枚くらいプレビューを見せて。文字が写真に埋もれていたら、暗さを上げるか見た目を変えて」
+- 「4 枚くらいプレビューを見せて。文字が写真に埋もれていたら、文字の下の暗幕を付けるか、暗さを上げて」
+- 「写真の切り替えをもっと派手に。いろいろな切り替え効果で、写真はスタイルの色に寄せて」
 - 「3 行目は `sunset.jpg`、サビ前の行は画像なしにして」
 - 「同じ設定で 9:16 も書き出して。ファイル名は `mv_vertical.mp4`」
 
@@ -112,7 +114,7 @@ python3 tools/jizura_cli.py plan --project out/mv.jizura.json --media pics/
 python3 tools/jizura_cli.py info
 ```
 
-ほかの指定：`--line-media 3=sunset.jpg`（何度でも）、`--dim 0.4`、`--hold still`、`--extend pingpong`、`--variation 2`、`--style noir`、
+ほかの指定：`--line-media 3=sunset.jpg`（何度でも）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
 `--res 720`、`--fps 30`、`--range 30-45`（その秒だけ）、`--no-audio`、`--force`（上書き）。一覧は `python3 tools/jizura_cli.py render -h`。
 
 ## うまくいかないとき

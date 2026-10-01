@@ -12,7 +12,7 @@ H.264 の MP4（AI 動画の多く）を読むには Google Chrome か Edge が�
 import argparse, asyncio, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from jizura_driver import Jizura, JizuraError, ASPECTS, RES, FPS, QUALITY, MEDIA_ORDER, MEDIA_HOLD, MEDIA_FIT, VIDEO_EXTEND, VIDEO_RATES, VIDEO_BEATS
+from jizura_driver import Jizura, JizuraError, ASPECTS, RES, FPS, QUALITY, MEDIA_ORDER, MEDIA_HOLD, MEDIA_FIT, MEDIA_ENTER, MEDIA_TREAT, MEDIA_SCRIM, VIDEO_EXTEND, VIDEO_RATES, VIDEO_BEATS
 
 
 def log(msg): print(msg, file=sys.stderr, flush=True)
@@ -31,7 +31,10 @@ def common(p):
     g.add_argument('--style', help='スタイルを固定（例 noir）'); g.add_argument('--mood', help='雰囲気を固定（例 calm）')
     g.add_argument('--seed', type=int, help='カット割りのシード')
     g = p.add_argument_group('画像・動画')
-    g.add_argument('--order', choices=MEDIA_ORDER); g.add_argument('--hold', choices=MEDIA_HOLD, help='kenburns = ゆっくり寄る')
+    g.add_argument('--order', choices=MEDIA_ORDER); g.add_argument('--hold', choices=MEDIA_HOLD, help='動き：kenburns = ゆっくり寄る、pan = 横に流す、push = ぐっと寄る、drift = 漂う、beatPulse = 拍で脈打つ')
+    g.add_argument('--trans', help='つなぎ：fade / cut / mix / 切り替え効果の名前（info で一覧）')
+    g.add_argument('--enter', choices=MEDIA_ENTER, help='登場・退場（前後に画像が無いとき）'); g.add_argument('--treat', choices=MEDIA_TREAT, help='加工')
+    g.add_argument('--scrim', choices=MEDIA_SCRIM, help='文字の下の暗幕'); g.add_argument('--media-omakase', action='store_true', help='メディアのおまかせ（動き・つなぎ・加工などをまとめて決める）')
     g.add_argument('--fit', choices=MEDIA_FIT); g.add_argument('--dim', type=float, help='暗さ 0〜0.9（文字を読みやすく）')
     g.add_argument('--lyric-bg', action='store_true', help='歌詞側の背景グラフィックも重ねる')
     g.add_argument('--shuffle', type=int, help='並びのシード（order=random のとき）')
@@ -61,7 +64,9 @@ async def setup(jz, a, aspect):
     if a.theme or a.variation is not None or a.style or a.mood or a.seed is not None:
         r = await jz.set_look(theme=a.theme, style=a.style, mood=a.mood, variation=a.variation, seed=a.seed)
         log(f'見た目: {r["styleName"]}・{r["mood"]}' + (f'（テーマ {r["theme"]}）' if r['theme'] else ''))
-    mo = dict(order=a.order, hold=a.hold, fit=a.fit, dim=a.dim, lyric_bg=True if a.lyric_bg else None, shuffle=a.shuffle, extend=a.extend, rate=a.rate, beats=a.beats)
+    if a.media_omakase: r = await jz.media_omakase(); log(f'メディアのおまかせ: {r["summary"]}')
+    mo = dict(order=a.order, hold=a.hold, fit=a.fit, dim=a.dim, lyric_bg=True if a.lyric_bg else None, shuffle=a.shuffle, extend=a.extend, rate=a.rate, beats=a.beats,
+              trans=a.trans, enter=a.enter, exit=a.enter, treat=a.treat, scrim=a.scrim)
     if any(v is not None for v in mo.values()): await jz.set_media_options(**mo)
     for s in a.line_media:
         k, _, v = s.partition('=')

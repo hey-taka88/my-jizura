@@ -192,15 +192,28 @@ async def set_look(theme: str = '', variation: int | None = None, style: str = '
 
 @mcp.tool()
 async def set_media_options(auto: bool | None = None, order: str = '', hold: str = '', fit: str = '', dim: float | None = None,
-                            lyric_bg: bool | None = None, shuffle: int | None = None, extend: str = '', rate: float | None = None,
+                            lyric_bg: bool | None = None, shuffle: int | None = None, trans: str = '', enter: str = '', exit: str = '',
+                            treat: str = '', scrim: str = '', scrim_amount: float | None = None, extend: str = '', rate: float | None = None,
                             beats: int | None = None) -> dict:
     """How pictures and clips fill the song. auto: one per lyric line in turn; order: sequential | random; shuffle: a number for
-    another random order; hold: kenburns (slow zoom) | still; fit: cover | contain; dim: 0–0.9 dark veil over the pictures so the
-    lyrics stay readable (default 0.25); lyric_bg: also draw the lyrics' background graphic over the pictures.
-    Clips shorter than their line — extend: loop | pingpong | hold (stop on the last frame) | beat (restart every `beats` beats:
-    1, 2, 4, 8, 16); rate: 0.5–2. Empty = unchanged."""
+    another random order; hold (motion): kenburns (slow zoom) | pan | push | drift | beatPulse | still; fit: cover | contain;
+    dim: 0–0.9 dark veil over the pictures (default 0.25); lyric_bg: also draw the lyrics' background graphic over the pictures.
+    trans (from one picture to the next): fade | cut | mix (a different transition each time) | a transition key (see options);
+    enter / exit (where no picture touches): fade | slide | zoom | wipe | cut; treat: none | match (tint to the style's colours) |
+    mono | sepia | duotone | blur; scrim (a soft plate behind the lyrics): auto (only where the picture makes them hard to read) |
+    always | off, scrim_amount 0–0.9. Clips shorter than their line — extend: loop | pingpong | hold | beat (restart every `beats`
+    beats: 1, 2, 4, 8, 16); rate: 0.5–2. Empty = unchanged. If the lyrics are hard to read in preview: raise dim or set scrim."""
     return await call(lambda jz: jz.set_media_options(auto=auto, order=order or None, hold=hold or None, fit=fit or None, dim=dim,
-                                                       lyric_bg=lyric_bg, shuffle=shuffle, extend=extend or None, rate=rate, beats=beats))
+                                                       lyric_bg=lyric_bg, shuffle=shuffle, trans=trans or None, enter=enter or None,
+                                                       exit=exit or None, treat=treat or None, scrim=scrim or None, scrim_amount=scrim_amount,
+                                                       extend=extend or None, rate=rate, beats=beats))
+
+
+@mcp.tool()
+async def media_omakase() -> dict:
+    """メディアのおまかせ: pick the pictures' motion, transitions, in / out, treatment, darkness and order together at random
+    (a new idea each call; preview to see it). Returns the settings chosen."""
+    return await call(lambda jz: jz.media_omakase())
 
 
 @mcp.tool()
