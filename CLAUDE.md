@@ -35,6 +35,7 @@ python3 dev/build_test.py all --all-packs         # テスト用バンドル dev
 (cd dev/www && python3 -m http.server 8765 &)     # テストページの配信（playwright 系ツールが使う）
 python3 dev/smoke_all.py t_all                    # 全部品を多数の組み合わせで描画。problems 0 と page errors [] が合格
 python3 dev/cost_scan.py t_all 45                 # 45ms を超えるフレームの一覧
+python3 dev/lyrics_import_e2e.py                  # ビルド済みの index.html で歌詞タイミングの取り込み（SRT・VTT・Whisper / Suno の JSON・拡張 LRC）を確認
 python3 dev/media_e2e.py [--shots out/media]      # ビルド済みの index.html で画像レイヤーを通しで確認（画像の追加 → 行ごとの切り替え → 再読み込み → 書き出し）。先に python3 build.py
 node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触ったときだけ
 ```

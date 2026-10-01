@@ -282,7 +282,10 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 
 ### Phase 1.5 — 歌詞タイミングの取り込み（Phase 1 と並行可・Sonnet・小）
 
-- [ ] LRC 読み込み（本家 v0.10）を拡張し、SRT / VTT / Whisper の JSON（`segments[].words[]` の word timestamps）を読めるようにする。Suno のタイムスタンプ付き歌詞（LRC または JSON）も対象。行の開始時刻は `timing.lineTimes` に、語の時刻は将来の B4 用に `overrides[i].words` に保存（今は使わない）
+**状態：完了（2026-10-01）。** `src/11y_lyrics_import.js` が SRT・VTT・JSON（Whisper の segments、Suno の aligned_words、WhisperX などの単語リスト、`[{ start|time, text }]`）と拡張 LRC を LRC に変換し、本家の「LRC を読み込む」（元に戻す付き）に渡す。本家ファイルの変更は `12_ui.js` 1 行。確認は `python3 dev/lyrics_import_e2e.py`。
+計画との違い：語ごとの時刻は保存しない（使う機能がまだ無いので。B4 を作るときに足す）。`[Verse]` `[Chorus]` などの見出しは空行（＝新しいまとまり）に、JIZURA が読めない間奏タグ（`[Instrumental Break]` など）は `[間奏]` にする。単語の時刻から行を作るときは、単語の中の改行・0.9 秒以上の間・文末＋0.3 秒の間で区切る。
+
+- [x] LRC 読み込み（本家 v0.10）を拡張し、SRT / VTT / Whisper の JSON（`segments[].words[]` の word timestamps）を読めるようにする。Suno のタイムスタンプ付き歌詞（LRC または JSON）も対象
 - 受け入れ：Whisper の JSON を落とすと、タップ同期なしで行が合う。既存の LRC 読み込みの挙動は変わらない
 
 ### Phase 2 — 動画（Sonnet 実装 / Opus レビュー。難所は Opus が設計）
@@ -294,6 +297,22 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 5. メモリ管理：同時に `src` を持つ video は「今のカット＋次のカット」だけ。それ以外は解放
 6. 動画ファイルを「曲として読み込む」で音声だけ取り出せるようにする（`loadAudioFile` の accept に video を足す。`decodeAudioData` はそのまま）
 - 受け入れ：8 秒の AI 生成クリップ 1 本を 3 分の曲全体に `pingpong` と `beat` で敷いて破綻しない。1080p30 の MP4 を 2 本置き、24fps / 30fps の両方で書き出したときに**フレームの取りこぼし・重複が無い**（書き出し MP4 を `ffprobe -show_frames` などで確認、または画面に時刻を焼き込んだテスト動画で目視）。プレビューでカクつかない（1080p で 24fps 維持）。iPad Safari でクラッシュしない（素材 2 本まで）
+
+### Phase 2.5 — エージェントから操作する（CLI → MCP）（Opus 設計 / Sonnet 実装）
+
+目的：「この曲・歌詞・画像フォルダで、しっとり系の 16:9 と 9:16 を書き出して」を Claude（Claude Code / Claude Desktop）や Codex に頼めるようにする。
+アプリはブラウザの中で全部動くので、**見えないブラウザ（Playwright の headless Chromium）でビルド済みの `index.html` を開き、`J.*` の関数を呼ぶ**のが土台になる。
+`dev/media_e2e.py` がすでにこの形（画像を入れる → 再生位置のフレームを見る → MP4 を書き出す）なので、それを道具として切り出す。
+
+1. **土台 `tools/jizura_driver.py`**：ページを開いて操作する関数の集まり。`new_project(lyrics, title, artist, aspect)`、`load_song(path)`、`import_timing(path)`（Phase 1.5 の変換を通す）、`add_pictures(paths)`、`set_line_picture(line, name | none)`、`set_look(style | theme | おまかせ)`、`get_plan()`（行・カット・画像の一覧）、`preview(times, scale)`（フレームの PNG）、`export_mp4(out, res, range)`、`save_project(path)`
+2. **CLI `tools/jizura_cli.py`**：`python3 tools/jizura_cli.py render --lyrics song.lrc --song song.mp3 --pictures ./pics --aspect 9:16 --theme ballad --out mv.mp4`。Claude Code はこれを Bash で呼べる（MCP なしでもここで実用になる）。アルバム単位の一括書き出し（IDEAS の G9）もここに足す
+3. **MCP サーバー `mcp/server.py`**（Python の `mcp` SDK、stdio）：上の関数をそのまま MCP のツールにする。`preview` は画像を返すので、モデルがフレームを**見て**「文字が写真に埋もれている → 暗さを上げる」のように直せる
+   - 読み書きできる場所は、設定した作業フォルダ（`JIZURA_WORKDIR`）の中だけにする。ネットワークには出ない（フォントの取得を除く）。既存ファイルは上書きしない
+   - 設定例を README に書く（Claude Desktop・Claude Code の `claude mcp add`・Codex CLI の `config.toml`）
+4. **参考**：hirazisora フォークの `mcp/`（Node + Playwright、MIT）。移植するより、このフォークの `J.media` に合わせて小さく作り直す方が保守しやすい
+
+- 受け入れ：Claude Code から `jizura` の MCP ツールだけで、AI 曲（mp3）＋ Suno の歌詞 JSON ＋ 画像 5 枚から、16:9 と 9:16 の MP4 が作業フォルダに出る。途中で `preview` の画像をモデルが確認できる
+- 順番：Phase 2（動画）の後がおすすめ（ツールの形が動画素材込みで決まるため）。急ぐなら 1 と 2 だけ先に作ってもよい
 
 ### Phase 3 — 前景レイヤー・クロマキー・演出（Opus 設計 / Sonnet 実装）
 
