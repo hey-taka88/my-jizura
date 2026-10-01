@@ -43,16 +43,19 @@ function paint(cv, src, w, h, kind, T, alpha) {
   x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
   return cv;
 }
-const kept = new WeakMap();   // picture copy → Map(treatment key → canvas)
+const kept = new WeakMap();   // picture copy → { key, cv }: its treated copy
 M.treated = (asset, src, c, plan, slot = 0) => {
   const kind = c.treat;
   if (!kind || kind === 'none' || !src) return src;
   const T = tones(plan);
   if (asset.type !== 'video') {
-    const key = kind + '|' + T.bg + T.dark + T.light + T.accent;
-    let m = kept.get(src); if (!m) kept.set(src, (m = new Map()));
-    if (!m.has(key)) m.set(key, paint(mk(2, 2), src, src.width, src.height, kind, T, true));
-    return m.get(key);
+    // one treated copy per picture copy: another treatment or style colour repaints it (no pile of full-size canvases);
+    // only duotone / match use the style's colours
+    const key = kind === 'duotone' || kind === 'match' ? kind + '|' + T.bg + T.dark + T.light + T.accent : kind;
+    let e = kept.get(src);
+    if (!e) kept.set(src, (e = { key: null, cv: mk(2, 2) }));
+    if (e.key !== key) { paint(e.cv, src, src.width, src.height, kind, T, true); e.key = key; }
+    return e.cv;
   }
   // a clip frame: into the clip's own canvas (one per slot: the seam of a loop draws two frames)
   const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
