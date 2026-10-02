@@ -6,7 +6,10 @@ Makes a working folder with a generated song (WAV), Suno-style timed lyrics and 
   new name, nothing is overwritten; the lengths are reported) · save_project → open_project keeps the lines and the per-line choice ·
   saving under the same name twice: a new name (returned as `saved`), or replace=true for a file this server wrote; never a file
   that was there before · add_timed_media: one picture under the whole song covers the automatic ones, a line's own choice still
-  shows, it comes back after save → open · open_project names the pictures that are not loaded · set_output 9:16.
+  shows, it comes back after save → open · open_project names the pictures that are not loaded · set_output 9:16 ·
+  set_line_style: a phrase starts at its own time, a big centred line / a line moved up / a short vertical line come back the same
+  (get_line and the same preview image) after save → open, a locked line survives set_look · relink_media in a fresh project ·
+  the interlude title can be left out while the title stays.
 Exit code 0 = all checks passed. Needs: pip install mcp (1.x or 2.x)."""
 import asyncio, base64, datetime, inspect, io, json, math, os, struct, sys, tempfile, wave
 from PIL import Image, ImageDraw
@@ -18,7 +21,7 @@ BROWSER = sys.argv[sys.argv.index('--browser') + 1] if '--browser' in sys.argv e
 KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
          'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4',
-         'add_timed_media', 'remove_timed_media'}
+         'add_timed_media', 'remove_timed_media', 'get_line', 'set_line_style', 'set_text_options', 'relink_media'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -150,6 +153,66 @@ async def main():
             ok(r['removed'] == 1 and not r['timed'], 'remove_timed_media')
             err, msg = await call('add_timed_media', {'media': 'nope.png'}, expect_error=True)
             ok(err, 'an unknown picture is refused')
+            print('lyric lines set by hand')
+            import hashlib
+            md5 = lambda c: hashlib.md5(base64.b64decode([x for x in c if getattr(x, 'type', '') == 'image'][0].data)).hexdigest()
+            text = '[00:01.00]なんなんですかね\n[00:05.00]この、やけに/重たい感情\n[00:09.00][間奏 8]\n[00:17.00]西日を飲んだ/硝子の向こう\n[00:21.00]紙の値札'
+            await call('new_project', {'title': 'あの日の青', 'artist': 'テスト', 'lyrics': text})
+            await call('add_media', {'paths': ['pics']})
+            r = await call('set_line_style', {'line': 2, 'cut_times': [1.6]})
+            ok([(c['text'], c['start']) for c in r['cuts']] == [('この、やけに', 5), ('重たい感情', 6.6)], f"the second phrase starts at its own time {[(c['text'], c['start']) for c in r['cuts']]}")
+            r = await call('set_line_style', {'line': 1, 'layout': 'center', 'size': 1.6, 'decor': [], 'bg': 'none'})
+            ok(r['cuts'][0]['layout'] == 'center' and r['cuts'][0]['decor'] == [] and r['place'] == {'scale': 1.6}, f"line 1: big and centred, no decorations {r['place']}")
+            r = await call('set_line_style', {'line': 4, 'y': -0.3, 'color': '#ffcc33'})
+            ok(r['place'] == {'y': -0.3, 'color': '#ffcc33'} and all(c['color'] == '#ffcc33' for c in r['cuts']), f"line 4: moved up, its own colour {r['place']}")
+            r = await call('set_line_style', {'line': 5, 'layout': 'vcols', 'single': True})
+            ok(len(r['cuts']) == 1 and r['cuts'][0]['layout'] == 'vcols', 'line 5: one short vertical cut')
+            err, msg = await call('set_line_style', {'line': 1, 'layout': 'nope'}, expect_error=True)
+            ok(err and 'layout' in msg, 'an unknown layout is refused')
+            before = {t: md5(await call('preview', {'times': [t], 'width': 320})) for t in (3.0, 7.0, 19.0, 22.0)}
+            lines_before = [await call('get_line', {'line': n}) for n in (1, 2, 4, 5)]
+            r = await call('save_project', {'path': 'styled.jizura.json'})
+            await call('new_project', {})
+            await call('open_project', {'path': r['saved']})
+            lines_after = [await call('get_line', {'line': n}) for n in (1, 2, 4, 5)]
+            after = {t: md5(await call('preview', {'times': [t], 'width': 320})) for t in (3.0, 7.0, 19.0, 22.0)}
+            ok(lines_after == lines_before, 'save → open gives the same lines, cuts and settings')
+            ok(after == before, f'… and the same frames ({sum(after[t] == before[t] for t in after)}/4 identical)')
+            p6 = await call('get_plan')
+            ok([l['text'] for l in p6['lines']] == ['なんなんですかね', 'この、やけに/重たい感情', '', '西日を飲んだ/硝子の向こう', '紙の値札']
+               or [l['text'].replace('/', '') for l in p6['lines']] == ['なんなんですかね', 'この、やけに重たい感情', '', '西日を飲んだ硝子の向こう', '紙の値札'],
+               f"the lyric text itself is unchanged {[l['text'] for l in p6['lines']]}")
+            r = await call('set_line_style', {'line': 4, 'lock': True})
+            locked = [(c['layout'], c['enter']) for c in r['cuts']]
+            await call('set_look', {'variation': 7})
+            r = await call('get_line', {'line': 4})
+            ok([(c['layout'], c['enter']) for c in r['cuts']] == locked and r['place'] == {'y': -0.3, 'color': '#ffcc33'}, f'a locked line keeps its look when set_look runs {locked}')
+            r = await call('set_line_style', {'line': 1, 'decor': 'auto', 'size': 'auto', 'cuts': 'auto', 'cut_times': 'auto'})
+            ok(r['place'] == {} and 'decor' not in r['style'], f"'auto' passes the MCP schema and clears decor / size ({r['place']}, {r['style']})")
+            print('interlude title')
+            ok(p6['title'] == 'あの日の青', 'the title is in the project')
+            t_on = md5(await call('preview', {'times': [13.0], 'width': 320}))
+            r = await call('set_text_options', {'interlude_title': False})
+            t_off = md5(await call('preview', {'times': [13.0], 'width': 320}))
+            p7 = await call('get_plan')
+            ok(r == {'interludeTitle': False} and t_on != t_off and p7['title'] == 'あの日の青' and len(p7['lines']) == 5,
+               'the interlude can leave the title out; the title and every line stay')
+            print('relink')
+            r = await call('save_project', {'path': 'relink.jizura.json'})
+            async with stdio_client(params) as (r2, w2):                     # a fresh server: nothing loaded yet
+                async with ClientSession(r2, w2) as s2:
+                    await s2.initialize()
+                    async def call2(name, args=None):
+                        to2 = 600 if not str(inspect.signature(s2.call_tool).parameters['read_timeout_seconds'].annotation).count('timedelta') else datetime.timedelta(seconds=600)
+                        res = await s2.call_tool(name, args or {}, read_timeout_seconds=to2)
+                        sc = getattr(res, 'structuredContent', None) or getattr(res, 'structured_content', None)
+                        return sc if isinstance(sc, dict) else json.loads(res.content[0].text)
+                    p8 = await call2('open_project', {'path': r['saved']})
+                    ok(sorted(p8['missing']) == ['01.png', '02.png', '03.png'], f"a fresh session names the missing pictures {p8['missing']}")
+                    os.rename(os.path.join(d, 'pics', '02.png'), os.path.join(d, 'pics', 'renamed.png'))
+                    r9 = await call2('relink_media', {'paths': ['pics']})
+                    ok(sorted(r9['relinked']) == ['01.png', '02.png', '03.png'] and not r9['missing'] and 'renamed.png' in r9['files'],
+                       f"relink_media finds them by content, a renamed file too {r9}")
             r = await call('set_output', {'aspect': '9:16'})
             ok(r['aspect'] == '9:16' and r['size'] == [1080, 1920], f'set_output: {r}')
             st = await call('status')

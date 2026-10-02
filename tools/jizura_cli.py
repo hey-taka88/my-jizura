@@ -41,6 +41,12 @@ def common(p):
     g.add_argument('--extend', choices=VIDEO_EXTEND, help='動画が行より短いとき')
     g.add_argument('--rate', type=float, choices=VIDEO_RATES); g.add_argument('--beats', type=int, choices=VIDEO_BEATS)
     g.add_argument('--line-media', action='append', default=[], metavar='行=画像', help='行ごとの画像（例 3=sunset.jpg、5=none）。何度でも')
+    g.add_argument('--relink', action='append', default=[], metavar='フォルダ', help='--project の素材を中身で探して読み込み直す（名前が変わっていても可）')
+    g = p.add_argument_group('文字')
+    g.add_argument('--line-style', action='append', default=[], metavar='行[.カット]:キー=値,…',
+                   help='行の見た目を固定（例 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1、2:cut_times=1.6、4.2:layout=vcols）')
+    g.add_argument('--no-interlude-title', action='store_true', help='間奏に曲名を出さない（曲名はプロジェクトに残る）')
+    g = p.add_argument_group('画像・動画（続き）')
     g.add_argument('--timed-media', action='append', default=[], metavar='画像@開始-終了',
                    help='曲の時刻で置く画像・動画（例 bg.mp4@0- で曲全体、city.jpg@30-45）。行の切り替えで頭に戻らない。何度でも')
     g = p.add_argument_group('出力')
@@ -77,6 +83,24 @@ async def setup(jz, a, aspect):
         except ValueError: raise JizuraError(f'--timed-media は 画像@開始-終了 の形で: {s}')
         if not name: raise JizuraError(f'--timed-media は 画像@開始-終了 の形で: {s}')
         r = await jz.add_timed_media(name, start=t0, end=t1); log(f'時刻で配置: {name} {t0:g}〜{"" if t1 is None else f"{t1:g}"} 秒（{r["id"]}）')
+    if a.relink:
+        r = await jz.relink_media(a.relink); log(f'再リンク: {len(r["relinked"])} 件' + (f'（見つからない：{", ".join(r["missing"])}）' if r['missing'] else ''))
+    if a.no_interlude_title: await jz.set_text_options(interlude_title=False)
+    for spec in a.line_style:
+        head, _, body = spec.partition(':')
+        ln, _, ct = head.partition('.')
+        if not ln.strip().isdigit() or not body: raise JizuraError(f'--line-style は 行[.カット]:キー=値,… の形で: {spec}')
+        kw = {}
+        for item in body.split(','):
+            k, _, v = item.partition('='); k = k.strip(); v = v.strip()
+            if k in ('x', 'y', 'size'): kw[k] = v if v == 'auto' else float(v)
+            elif k == 'cuts': kw[k] = v if v == 'auto' else int(v)
+            elif k == 'cut_times': kw[k] = 'auto' if v == 'auto' else [float(t) for t in v.split('/') if t]
+            elif k == 'decor': kw[k] = [] if v == 'none' else 'auto' if v == 'auto' else v.split('/')
+            elif k in ('single', 'lock'): kw[k] = v in ('1', 'true', 'yes', 'on')
+            elif k in ('layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'color'): kw[k] = v
+            else: raise JizuraError(f'--line-style のキーが分かりません: {k}')
+        await jz.set_line_style(int(ln), cut=int(ct) if ct else None, **kw)
     for s in a.line_media:
         k, _, v = s.partition('=')
         if not k.strip().isdigit() or not v: raise JizuraError(f'--line-media は 行=画像 の形で: {s}')

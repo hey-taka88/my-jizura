@@ -174,6 +174,7 @@ function barStart(plan, c, t, n) {
 M.resolve = (project, plan) => {
   if (!project || !project.media) return null;
   const m = M.normalize(project.media);          // cheap, and plans built from test / preview projects get the same checks
+  if (M.applyText) M.applyText(m, plan);          // lyric placement / colour set by hand, the interlude title (08m_media_text.js)
   const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off', scrim: Object.assign({}, m.scrim) };
   for (const k of M.TRACKS) out[k] = resolveTrack(m, k, plan);
   return out;

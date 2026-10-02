@@ -46,6 +46,7 @@ M.defaults = () => ({
   },
   lyricBg: 'off',
   scrim: { mode: 'auto', amount: 0.55 },
+  text: M.textDefaults ? M.textDefaults() : { interludeTitle: 'show', lines: {} },   // lyric placement / colour by hand (08m_media_text.js)
 });
 
 const num = (v, lo, hi, d) => { const n = +v; return Number.isFinite(n) ? J.clamp(n, lo, hi) : d; };
@@ -115,7 +116,8 @@ M.normalize = m => {
   const tr = isObj(m.tracks) ? m.tracks : {}, af = isObj(m.autoFill) ? m.autoFill : {};
   const sc = isObj(m.scrim) ? m.scrim : {};
   const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg),
-    scrim: { mode: pick(sc.mode, M.SCRIM, d.scrim.mode), amount: num(sc.amount, 0, 0.9, d.scrim.amount) } };
+    scrim: { mode: pick(sc.mode, M.SCRIM, d.scrim.mode), amount: num(sc.amount, 0, 0.9, d.scrim.amount) },
+    text: M.normalizeText ? M.normalizeText(m.text) : d.text };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
   // a cut may only point at an asset of this project ('' = deliberately none); cuts of a picture that is gone are dropped
   for (const k of M.TRACKS) out.tracks[k].cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
