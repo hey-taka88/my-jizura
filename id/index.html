@@ -5490,11 +5490,25 @@ M.lineCuts = (plan, li) => plan.cuts.filter(c => c.line === li && c.utext != nul
 M.applyText = (m, plan) => {
   const T = m && m.text;
   if (!T || !plan || !plan.cuts) return;
-  // 間奏の曲名: the title / artist stay in the project (and the LRC tags), only the interlude card leaves them out
-  if (T.interludeTitle === 'hide') for (const c of plan.cuts) if (c.layout === 'interlude' && c.params && c.params.showTitle) c.params = Object.assign({}, c.params, { showTitle: false, titleText: '' });
+  // 間奏の曲名: the title / artist stay in the project (and the LRC tags), only the interludes leave them out —
+  // both a [間奏] line (params.showTitle) and the interlude the planner puts into a long gap between lines (the title as its text;
+  // a blank, since an empty text would show '— interlude —')
+  if (T.interludeTitle === 'hide') for (const c of plan.cuts) {
+    if (c.layout !== 'interlude') continue;
+    if (c.params && c.params.showTitle) c.params = Object.assign({}, c.params, { showTitle: false, titleText: '' });
+    if (c.text && c.utext == null) c.text = ' ';
+  }
   const lines = T.lines || {};
+  const n0 = plan.style.schemes.length;
+  // text colours: for every colour used, a copy of every scheme at n0 + i·n0 + base — so any index, also one a locked line kept
+  // from an earlier plan, still tells its own scheme (index % n0) and the colour never takes the background / accents of another
+  const colors = [...new Set(Object.values(lines).flatMap(L => [L.color, ...Object.values(L.cuts || {}).map(c => c.color)]).filter(Boolean))].sort();
+  for (const c of plan.cuts) if (c.scheme >= n0) c.scheme = c.scheme % n0;
   if (!Object.keys(lines).length) return;
-  const n0 = plan.style.schemes.length, made = new Map();
+  if (colors.length) {
+    plan.style.schemes = plan.style.schemes.slice();                       // this plan's own copy (J.resolveStyle copies the style)
+    for (const col of colors) for (let b = 0; b < n0; b++) plan.style.schemes.push(Object.assign({}, plan.style.schemes[b], { fg: col }));
+  }
   for (const [lk, L] of Object.entries(lines)) {
     M.lineCuts(plan, +lk).forEach((c, k) => {
       const spec = Object.assign({}, L, (L.cuts || {})[k] || {});
@@ -5504,15 +5518,7 @@ M.applyText = (m, plan) => {
         c.camP = { x: spec.x || 0, y: spec.y || 0, s: spec.scale || 1, base: P0 ? P0.base : c.cam, baseP: P0 ? P0.baseP : c.camP };
         c.cam = 'place';
       }
-      if (spec.color) {
-        const base = ((c.scheme | 0) % n0 + n0) % n0, key = base + spec.color;
-        if (!made.has(key)) {
-          if (made.size === 0) plan.style.schemes = plan.style.schemes.slice();     // this plan's own copy (J.resolveStyle copies the style)
-          plan.style.schemes.push(Object.assign({}, plan.style.schemes[base], { fg: spec.color }));
-          made.set(key, plan.style.schemes.length - 1);
-        }
-        c.scheme = made.get(key);
-      }
+      if (spec.color) c.scheme = n0 + colors.indexOf(spec.color) * n0 + ((c.scheme | 0) % n0);
     });
   }
 };

@@ -192,7 +192,7 @@ JS_SET_LINE_STYLE = r"""(o) => {
     for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime']) put(ov, k, o[k]);
   } else {                                       // このカットだけ (the app's cutTech: layout / motion / camera / treatment / transition)
     const ct = Object.assign({}, ov.cutTech || {}), t = Object.assign({}, ct[o.cut] || {});
-    for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'treat']) put(t, k, o[k]);
+    for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'treat', 'bg', 'decor']) put(t, k, o[k]);   // (decor: one key or 'none')
     if (Object.keys(t).length) ct[o.cut] = t; else delete ct[o.cut];
     if (Object.keys(ct).length) ov.cutTech = ct; else delete ov.cutTech;
   }
@@ -505,7 +505,8 @@ class Jizura:
 
     async def set_line_style(self, line, cut=None, layout=None, enter=None, exit=None, hold=None, cam=None, trans=None, bg=None, decor=None,
                              treat=None, cuts=None, cut_times=None, single=None, x=None, y=None, size=None, color=None, lock=None, reset=False):
-        """fix how a lyric line looks (or only its cut `cut`, 1 = first). Parts by key (see options()['lyric']); 'auto' = back to automatic.
+        """fix how a lyric line looks (or only its cut `cut`, 1 = first; a cut takes one decoration at most). Parts by key (see options()['lyric']);
+        'auto' = back to automatic.
         cuts: how many cuts the line is split into; cut_times: when cuts 2, 3 … start (seconds from the line start); single: one cut.
         x / y: move the lyric (-0.5 … 0.5 of the frame), size: 0.2 … 3, color: '#rrggbb' text colour.
         lock: keep exactly this look when other lines change (a locked line is re-locked after a change). reset: clear everything"""
@@ -523,14 +524,17 @@ class Jizura:
         if cut is not None:
             n = len((await self.get_line(line))['cuts'])
             if not (isinstance(cut, int) and 1 <= cut <= max(n, 12)): raise JizuraError(f'cut は 1〜{n}: {cut}')
-            if any(v is not None for v in (bg, decor, cuts, cut_times, single)): raise JizuraError('bg / decor / cuts / cut_times / single は行全体の指定です（cut なしで）')
+            if any(v is not None for v in (cuts, cut_times, single)): raise JizuraError('cuts / cut_times / single は行全体の指定です（cut なしで）')
             o['cut'] = cut - 1
         if decor is not None:
             if decor == 'auto': o['decor'] = 'auto'
             else:
+                if isinstance(decor, str): decor = [] if decor == 'none' else [decor]
                 bad = [d for d in decor if d not in O['decor']]
                 if bad: raise JizuraError(f'decor にない装飾: {bad}')
-                o['decor'] = list(decor)
+                if cut is None: o['decor'] = list(decor)
+                elif len(decor) > 1: raise JizuraError('カットごとの装飾は 1 つまで（行全体なら cut なしで）')
+                else: o['decor'] = decor[0] if decor else 'none'
         if cuts is not None:
             if cuts != 'auto' and not (isinstance(cuts, int) and 1 <= cuts <= 12): raise JizuraError(f'cuts は 1〜12 か auto: {cuts}')
             o['cuts'] = cuts

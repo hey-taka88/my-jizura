@@ -187,6 +187,8 @@ async def main():
             await call('set_look', {'variation': 7})
             r = await call('get_line', {'line': 4})
             ok([(c['layout'], c['enter']) for c in r['cuts']] == locked and r['place'] == {'y': -0.3, 'color': '#ffcc33'}, f'a locked line keeps its look when set_look runs {locked}')
+            r = await call('set_line_style', {'line': 1, 'decor': 'auto', 'size': 'auto', 'cuts': 'auto', 'cut_times': 'auto'})
+            ok(r['place'] == {} and 'decor' not in r['style'], f"'auto' passes the MCP schema and clears decor / size ({r['place']}, {r['style']})")
             print('interlude title')
             ok(p6['title'] == 'あの日の青', 'the title is in the project')
             t_on = md5(await call('preview', {'times': [13.0], 'width': 320}))

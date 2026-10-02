@@ -215,12 +215,14 @@ async def get_line(line: int) -> dict:
 
 @mcp.tool()
 async def set_line_style(line: int, cut: int | None = None, layout: str = '', enter: str = '', exit: str = '', hold: str = '', cam: str = '',
-                         trans: str = '', bg: str = '', decor: list[str] | None = None, treat: str = '', cuts: int | None = None,
-                         cut_times: list[float] | None = None, single: bool | None = None, x: float | None = None, y: float | None = None,
-                         size: float | None = None, color: str = '', lock: bool | None = None, reset: bool = False) -> dict:
+                         trans: str = '', bg: str = '', decor: list[str] | str | None = None, treat: str = '', cuts: int | str | None = None,
+                         cut_times: list[float] | str | None = None, single: bool | None = None, x: float | str | None = None,
+                         y: float | str | None = None, size: float | str | None = None, color: str = '', lock: bool | None = None,
+                         reset: bool = False) -> dict:
     """Fix how one lyric line looks (or only its cut `cut`, 1 = first) — independent of set_look's random picks, kept in the project.
     Parts by key from options()['lyric'] (layout e.g. center / huge / vcols / lowerThird …; enter / exit / hold motions; cam; treat; bg
-    or 'none'; trans or 'none'); 'auto' returns one part to automatic. decor: list of decoration keys ([] = none). cuts: split the line
+    or 'none'; trans or 'none'); 'auto' returns one part to automatic (also for decor, cuts, cut_times, x, y, size, color).
+    decor: list of decoration keys ([] or 'none' = none; one at most with `cut`). With `cut`, bg and decor apply to that cut. cuts: split the line
     into that many cuts; cut_times: when cuts 2, 3 … start, in seconds from the line start (e.g. the second phrase); single: one cut.
     x / y: move the lyric (-0.5 … 0.5 of the frame; y < 0 = up), size: 0.2 … 3 (1 = as laid out), color: '#rrggbb' text colour.
     lock: keep exactly this look when other lines are changed or set_look runs. reset: clear everything set for the line.
