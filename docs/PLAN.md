@@ -364,7 +364,7 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 - [x] P1 文字組みを直接固定する操作：`get_line` / `set_line_style`（CLI `--line-style`）。配置・動き・カメラ・背景グラフィック・装飾・カット数・句の開始時刻・固定は本家の `overrides`（行）と `cutTech`（カット）に書く。位置・大きさ・文字色は本家に無いので `project.media.text.lines` に持ち、計画のあとで当てる（`src/08m_media_text.js`：文字だけを動かす特別なカメラ `place`（おまかせでは選ばれない）と、その行用の配色の複製）。プレビューは 1 つの描画器を使い回すので、同じ作業の中では保存→開き直し後も同じ画素になる（本家の紙・粒子の質感は描画器ごとにランダムに作られるため）。**Web の画面からは、位置・大きさ・色はまだ変えられない**（Phase 3b の配置編集で）
 - [x] P1 素材の再リンク：`relink_media`（CLI `--relink`）。素材の id は中身の SHA-256 の先頭 12 桁なので、名前が変わっても見つかる。素材込みの書き出し（`.jizura.zip`）は Phase 4
 - [x] P1 間奏でタイトルを出すかどうか：`set_text_options(interlude_title=false)`（CLI `--no-interlude-title`）。`project.media.text.interludeTitle`。本家のファイルは変えず、計画のあとで間奏のカットの曲名だけを消す。Web の画面にはまだ無い
-- [ ] P2 1 回の制作の記録（使った project・素材のハッシュ・出力のパス）をまとめる run manifest
+- [x] P2 制作の記録（run manifest）：MCP サーバーが作業フォルダの `jizura_runs/<日時>_<名前>/` に `report.md`（日本語）・`run.json`・`calls.jsonl`・`previews/`・`projects/` を残す（`tools/jizura_runlog.py`）。環境（版・commit・ページの sha256・ブラウザ）、時間（ツールの中／ツールとツールのあいだ、段階ごと）、読んだ・書いたファイルの sha256、プレビュー・書き出しに使ったプロジェクトの状態、`log_note` のメモ（近いプレビュー画像つき）、断った呼び出し。CLI にはまだ無い
 
 ### Phase 4 — 統合・仕上げ
 

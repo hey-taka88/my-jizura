@@ -13,6 +13,8 @@ import argparse, asyncio, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from jizura_driver import Jizura, JizuraError, MEDIA_EXT
+from jizura_runlog import RunLog
+import functools
 
 try:                                                    # mcp 2.x
     from mcp.server.mcpserver import MCPServer as Server, Image, Context
@@ -28,6 +30,7 @@ ap = argparse.ArgumentParser(description='my-jizura MCP server (stdio)')
 ap.add_argument('--workdir', default=os.environ.get('JIZURA_WORKDIR') or os.getcwd(), help='the only folder the tools read and write')
 ap.add_argument('--browser', default=os.environ.get('JIZURA_BROWSER', 'auto'), choices=['auto', 'chrome', 'msedge', 'chromium'])
 ap.add_argument('--app', default=os.environ.get('JIZURA_APP'), help='index.html of this fork (default: the built one in this repository)')
+ap.add_argument('--no-record', action='store_true', help='do not keep the run log (jizura_runs/ in the working folder; also JIZURA_RECORD=0)')
 ARGS = ap.parse_args()
 WORK = os.path.realpath(os.path.expanduser(ARGS.workdir))
 if not os.path.isdir(WORK): sys.exit(f'jizura: workdir not found: {WORK}')
@@ -40,10 +43,15 @@ mcp = Server('jizura', instructions=(
     'save_project / export_mp4 return the path actually written (`saved`): use that one afterwards. '
     'A background clip for the whole song: add_timed_media (it runs on the song clock, not per line). '
     'To fix how a line looks (layout, size, position, colour, motion, decorations, when its second phrase starts): set_line_style; '
-    'get_line shows what a line became. After open_project, relink_media brings back the pictures listed in `missing`.'))
+    'get_line shows what a line became. After open_project, relink_media brings back the pictures listed in `missing`. '
+    'Every call is recorded in jizura_runs/ (制作の記録): use log_note for what you see, decide or work around (with the song time / '
+    'line), start_run for a new song, and run_info for where the record is.'))
 
 _jz = None
 _lock = asyncio.Lock()
+# 制作の記録: every call, the files read and written, the project states behind previews and exports (tools/jizura_runlog.py)
+RUN = RunLog(WORK, ARGS.app, enabled=not ARGS.no_record and os.environ.get('JIZURA_RECORD', '1') != '0',
+             log=lambda m: print(m, file=sys.stderr, flush=True))
 
 
 def log(msg): print(msg, file=sys.stderr, flush=True)
@@ -54,15 +62,18 @@ async def app():
     if _jz is None:
         jz = Jizura(app=ARGS.app, browser=ARGS.browser, log=log)
         await jz.start(); _jz = jz
+        try: RUN.set_browser(await jz.status())
+        except Exception: pass
     return _jz
 
 
-def inside(rel, must_exist=True):
+def inside(rel, must_exist=True, record=True):
     """a path in the working folder (relative, or absolute but inside it)"""
     if not isinstance(rel, str) or not rel.strip() or '\0' in rel: raise ToolError('パスを指定してください')
     p = os.path.realpath(os.path.join(WORK, os.path.expanduser(rel)))
     if p != WORK and not p.startswith(WORK + os.sep): raise ToolError(f'作業フォルダの外は使えません: {rel}')
     if must_exist and not os.path.exists(p): raise ToolError(f'見つかりません: {rel}')
+    if must_exist and record: RUN.input(p, MEDIA_EXT)             # what this call reads (content hash)
     return p
 
 
@@ -89,6 +100,36 @@ def target(rel_path, ext, replace=False):
 rel = lambda p: os.path.relpath(p, WORK)
 
 
+def recorded(fn):
+    """every tool call goes into the run log: arguments, time, result, the project state it leaves, the preview images"""
+    @functools.wraps(fn)
+    async def w(*a, **kw):
+        rec = RUN.begin(fn.__name__, {k: v for k, v in kw.items() if k != 'ctx'})
+        try: r = await fn(*a, **kw)
+        except BaseException as e:
+            if rec: RUN.end(rec, error=e, page_errors=_jz.errors if _jz else None)
+            raise
+        if rec:
+            images, summary = [], r
+            if isinstance(r, list):                          # preview: captions and images
+                summary, sec = [], 0.0
+                for x in r:
+                    if isinstance(x, str):
+                        summary.append(x)
+                        try: sec = float(x.split('s', 1)[0])
+                        except ValueError: pass
+                    elif getattr(x, 'data', None): images.append((sec, x.data))
+            project = None
+            if _jz is not None and _jz.page is not None:
+                try:
+                    async with _lock:
+                        project = (await _jz.page.evaluate('() => JSON.stringify(J.ui.project, null, 1)'), await _jz.get_plan())
+                except Exception: project = None
+            RUN.end(rec, result=summary, images=images, project=project, page_errors=_jz.errors if _jz else None)
+        return r
+    return w
+
+
 async def call(fn):
     async with _lock:
         try: return await fn(await app())
@@ -97,16 +138,55 @@ async def call(fn):
 
 # ---------------------------------------------------------------- tools
 @mcp.tool()
+@recorded
+async def log_note(text: str, kind: str = 'note', time: float | None = None, line: int | None = None) -> dict:
+    """Write into this production's record (制作の記録): what you saw, decided or ran into, so it can be fixed later. kind: note |
+    issue (something wrong or missing in the app / tools) | decision (a choice for this song) | workaround (done by hand or another tool
+    because the tools could not) | phase (where you are, e.g. 'export'). time: seconds in the song it is about; line: lyric line (1 = first).
+    Be concrete: what you asked for, what you got, which frame (preview it), what you did instead."""
+    if kind not in ('note', 'issue', 'decision', 'workaround', 'phase'): raise ToolError(f'kind は note / issue / decision / workaround / phase: {kind}')
+    n = RUN.note(text, kind=kind, time_s=time, line=line)
+    if n is None: raise ToolError('記録はオフです（--no-record / JIZURA_RECORD=0）')
+    return n
+
+
+@mcp.tool()
+@recorded
+async def run_info() -> dict:
+    """Where this production's record is (jizura_runs/… in the working folder: run.json, calls.jsonl, previews/, projects/) and its
+    summary so far: calls, time in tools vs. between tools, per phase, files written, notes and errors. Mention the folder when you report."""
+    if not RUN.enabled: return {'recording': False}
+    s = RUN.summary()
+    return {'dir': RUN.rel(RUN.dir), 'timing': s, 'outputs': [o['path'] for o in RUN.m['outputs']], 'notes': len(RUN.m['notes']),
+            'errors': len(RUN.m['errors']), 'projects': len(RUN.m['projects'])}
+
+
+@mcp.tool()
+@recorded
+async def start_run(title: str = '') -> dict:
+    """Start a new record (a new jizura_runs/ folder), e.g. for the next song; the record so far stays as it is."""
+    if not RUN.enabled: return {'recording': False}
+    RUN.start(title)
+    if _jz is not None:
+        try: RUN.set_browser(await _jz.status())
+        except Exception: pass
+    return {'dir': RUN.rel(RUN.dir)}
+
+
+@mcp.tool()
+@recorded
 async def list_files(folder: str = '.') -> dict:
     """Files in the working folder (or a sub-folder) that the tools can use, grouped: lyrics (lrc/srt/vtt/json/txt),
-    songs, media (pictures and video clips), projects (.jizura.json), videos already exported, sub-folders."""
-    d = inside(folder)
+    songs, media (pictures and video clips), projects (.jizura.json), sub-folders, and records (jizura_runs: the production records)."""
+    d = inside(folder, record=False)
     if not os.path.isdir(d): raise ToolError(f'フォルダではありません: {folder}')
     out = {'folder': rel(d), 'lyrics': [], 'songs': [], 'media': [], 'projects': [], 'folders': []}
     for n in sorted(os.listdir(d)):
         if n.startswith('.'): continue
         p = os.path.join(d, n); r = rel(p); low = n.lower()
-        if os.path.isdir(p): out['folders'].append(r)
+        if os.path.isdir(p):
+            if n == 'jizura_runs' and d == WORK: out['records'] = r            # 制作の記録 (not a folder of material)
+            else: out['folders'].append(r)
         elif low.endswith('.jizura.json'): out['projects'].append(r)
         elif MEDIA_EXT.search(n): out['media'].append(r)
         elif low.endswith(SONG_EXT): out['songs'].append(r)
@@ -115,6 +195,7 @@ async def list_files(folder: str = '.') -> dict:
 
 
 @mcp.tool()
+@recorded
 async def status() -> dict:
     """The browser in use and whether it can read / write H.264 MP4 (most AI video clips are H.264: they need Google Chrome or Edge;
     WebM clips work everywhere), the app version and the working folder."""
@@ -123,6 +204,7 @@ async def status() -> dict:
 
 
 @mcp.tool()
+@recorded
 async def options() -> dict:
     """The values the other tools accept: themes, styles, moods (with their Japanese names), aspects, resolutions, fps, quality,
     and the picture / clip settings."""
@@ -130,6 +212,7 @@ async def options() -> dict:
 
 
 @mcp.tool()
+@recorded
 async def new_project(title: str = '', artist: str = '', aspect: str = '16:9', lyrics: str = '') -> dict:
     """Start a new, empty project (a song already loaded stays). lyrics: optional text, one phrase per line ([mm:ss.xx] tags allowed).
     Returns the plan (see get_plan)."""
@@ -137,6 +220,7 @@ async def new_project(title: str = '', artist: str = '', aspect: str = '16:9', l
 
 
 @mcp.tool()
+@recorded
 async def open_project(path: str) -> dict:
     """Open a saved .jizura.json from the working folder (use the `saved` path that save_project returned). Pictures and clips are
     not inside the file: the plan's `missing` lists the ones to add again with add_media (they are recognised by content, so every
@@ -146,17 +230,19 @@ async def open_project(path: str) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def save_project(path: str = 'project.jizura.json', replace: bool = False) -> dict:
     """Save the project as .jizura.json in the working folder (it opens in the app in a browser too). When the name exists:
     replace=true writes over it if this server saved it earlier in this session (never over a file that was there before);
     otherwise a new name is chosen. Returns {requested, saved, collision: new | renamed | replaced} — open / use `saved`."""
     async def f(jz):
         p, info = target(path[:-12] if path.lower().endswith('.jizura.json') else path, '.jizura.json', replace)
-        await jz.save_project(p); _written.add(p); return info
+        await jz.save_project(p); _written.add(p); RUN.output(p, 'save_project', info); return info
     return await call(f)
 
 
 @mcp.tool()
+@recorded
 async def set_lyrics(path: str = '', text: str = '') -> dict:
     """Replace the lyrics, from a file in the working folder (LRC / SRT / VTT / Whisper JSON / Suno aligned-words JSON give each line
     its time; a .txt is one phrase per line) or from text. Per-line settings and pictures are reset. Returns line counts."""
@@ -166,6 +252,7 @@ async def set_lyrics(path: str = '', text: str = '') -> dict:
 
 
 @mcp.tool()
+@recorded
 async def load_song(path: str) -> dict:
     """Load the song (mp3 / wav / m4a …, or the sound of a video file) from the working folder. Tempo and length are analysed;
     lines without times are spread over the song."""
@@ -174,6 +261,7 @@ async def load_song(path: str) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def add_media(paths: list[str]) -> dict:
     """Add pictures and video clips (files or folders in the working folder; a folder adds its files in name order).
     By default they change line by line, in the order added. Returns what was added and what could not be read
@@ -183,6 +271,7 @@ async def add_media(paths: list[str]) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def remove_media(media: str) -> dict:
     """Remove a picture / clip (by name, or its number in get_plan's media list)."""
     async def f(jz): return {'media': await jz.remove_media(media)}
@@ -190,6 +279,7 @@ async def remove_media(media: str) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def add_timed_media(media: str, start: float = 0, end: float | None = None, clip_start: float | None = None, fit: str = '') -> dict:
     """Place a picture or clip at a time of the song (seconds) instead of per lyric line — e.g. one background clip under the whole
     song: start=0 and no end (end = the next timed placement, or the end of the song). It covers the automatic per-line pictures in
@@ -200,12 +290,14 @@ async def add_timed_media(media: str, start: float = 0, end: float | None = None
 
 
 @mcp.tool()
+@recorded
 async def remove_timed_media(id: str = 'all') -> dict:
     """Remove a picture placed at a time (its id from add_timed_media / get_plan's `timed`), or 'all' of them."""
     return await call(lambda jz: jz.remove_timed_media(id))
 
 
 @mcp.tool()
+@recorded
 async def get_line(line: int) -> dict:
     """One lyric line (1 = first, as in get_plan): its text and time, its own settings (style = layout / motion / decorations / cut times
     set by hand, place = position / size / colour) and every cut it became, with the parts actually used (layout, enter, exit, hold,
@@ -214,6 +306,7 @@ async def get_line(line: int) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def set_line_style(line: int, cut: int | None = None, layout: str = '', enter: str = '', exit: str = '', hold: str = '', cam: str = '',
                          trans: str = '', bg: str = '', decor: list[str] | str | None = None, treat: str = '', cuts: int | str | None = None,
                          cut_times: list[float] | str | None = None, single: bool | None = None, x: float | str | None = None,
@@ -234,6 +327,7 @@ async def set_line_style(line: int, cut: int | None = None, layout: str = '', en
 
 
 @mcp.tool()
+@recorded
 async def set_text_options(interlude_title: bool | None = None) -> dict:
     """interlude_title: show the song title / artist on long interludes (default true). The title stays in the project (and in
     get_plan) either way — this only decides whether the wordless interlude shows it."""
@@ -241,6 +335,7 @@ async def set_text_options(interlude_title: bool | None = None) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def relink_media(paths: list[str]) -> dict:
     """Bring back the pictures / clips an opened project names but has not loaded (get_plan's `missing`): give files or folders in
     the working folder; they are matched by content (a renamed file is found, a different file with the same name is not).
@@ -250,6 +345,7 @@ async def relink_media(paths: list[str]) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def set_line_media(line: int, media: str) -> dict:
     """Choose the picture behind lyric line `line` (1 = first line, as in get_plan): a media name or number, 'none' (no picture:
     the lyrics' own background shows), or 'auto' (back to the automatic order)."""
@@ -260,6 +356,7 @@ async def set_line_media(line: int, media: str) -> dict:
 
 
 @mcp.tool()
+@recorded
 async def set_look(theme: str = '', variation: int | None = None, style: str = '', mood: str = '', seed: int | None = None) -> dict:
     """Change how the lyrics look. theme: おまかせ within a direction (lyricpv, kinetic, wa, horror, pop, ballad — see options);
     variation: おまかせ again with this number (the same number gives the same look; try 1, 2, 3 … for alternatives);
@@ -268,6 +365,7 @@ async def set_look(theme: str = '', variation: int | None = None, style: str = '
 
 
 @mcp.tool()
+@recorded
 async def set_media_options(auto: bool | None = None, order: str = '', hold: str = '', fit: str = '', dim: float | None = None,
                             lyric_bg: bool | None = None, shuffle: int | None = None, trans: str = '', enter: str = '', exit: str = '',
                             treat: str = '', scrim: str = '', scrim_amount: float | None = None, extend: str = '', rate: float | None = None,
@@ -287,6 +385,7 @@ async def set_media_options(auto: bool | None = None, order: str = '', hold: str
 
 
 @mcp.tool()
+@recorded
 async def media_omakase() -> dict:
     """メディアのおまかせ: pick the pictures' motion, transitions, in / out, treatment, darkness and order together at random
     (a new idea each call; preview to see it). Returns the settings chosen."""
@@ -294,6 +393,7 @@ async def media_omakase() -> dict:
 
 
 @mcp.tool()
+@recorded
 async def set_output(aspect: str = '', res: int | None = None, fps: int | None = None, quality: str = '', include_audio: bool | None = None) -> dict:
     """Video settings: aspect 16:9 | 9:16 | 4:3 | 3:4 | 1:1 | 4:5 | 21:9 (the layout is redone for the new shape);
     res 720 | 1080 | 1440 | 2160 (short side); fps 24 | 30 | 60; quality standard | high | max. Empty = unchanged."""
@@ -301,6 +401,7 @@ async def set_output(aspect: str = '', res: int | None = None, fps: int | None =
 
 
 @mcp.tool()
+@recorded
 async def get_plan() -> dict:
     """The project: title, look, song, output size and length, every lyric line (1-based) with start / end seconds, its text,
     the picture shown and whether it was chosen by hand, the pictures and clips, and the picture settings."""
@@ -308,6 +409,7 @@ async def get_plan() -> dict:
 
 
 @mcp.tool()
+@recorded
 async def preview(times: list[float] | None = None, count: int = 4, width: int = 640) -> list:
     """Frames of the video as images, to check the look: are the lyrics readable over the pictures, does the style fit the song?
     times: seconds (max 12); without times, `count` frames spread over the lyric lines. width: pixels (max 1280)."""
@@ -321,6 +423,7 @@ async def preview(times: list[float] | None = None, count: int = 4, width: int =
 
 
 @mcp.tool()
+@recorded
 async def export_mp4(path: str = 'jizura.mp4', res: int | None = None, start: float | None = None, end: float | None = None,
                      audio: bool = True, quality: str = '', replace: bool = False, ctx: Context = None) -> dict:
     """Write the MP4 into the working folder. A name that exists: replace=true writes over it if this server wrote it earlier in this
@@ -335,7 +438,9 @@ async def export_mp4(path: str = 'jizura.mp4', res: int | None = None, start: fl
             if ctx is not None and jz.progress and not task.done():
                 try: await ctx.report_progress(round(jz.progress[0] * 100, 1), 100, jz.progress[1])
                 except Exception: pass
-        r = task.result(); _written.add(p); r.update(info); r['path'] = info['saved']; return r
+        r = task.result(); _written.add(p); r.update(info); r['path'] = info['saved']
+        RUN.output(p, 'export_mp4', info, extra={k: r.get(k) for k in ('codec', 'width', 'height', 'fps', 'frames', 'videoDuration', 'audioDuration', 'audio', 'duration')})
+        return r
     return await call(f)
 
 

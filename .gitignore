@@ -3,3 +3,5 @@ __pycache__/
 dev/www/
 dev/node_modules/
 out/
+# MCP の制作の記録（作業フォルダに作られる）
+jizura_runs/
