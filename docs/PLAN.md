@@ -361,9 +361,9 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 - [x] **P0 保存したファイルの再利用**：`save_project` / `export_mp4` は `{requested, saved, collision: new|renamed|replaced}` を返す。`replace=true` は、このサーバーが今回書いたファイルだけ上書き（前からあるファイルは上書きしない方針はそのまま）。`open_project` / `get_plan` は読み込まれていない素材を `missing` に出す
 - [x] **P0 曲の時刻で置く背景**：`add_timed_media` / `remove_timed_media`（CLI は `--timed-media 名前@開始-終了`）。優先順は「行ごとに選んだ画像 ＞ 時刻で置いた画像 ＞ 行ごとの自動」。時刻で置いた動画は `anchor`（置いた時刻）から曲の時計で流れ、行や割り込みで頭に戻らない（`M.videoTimes` が `c.anchor` を使う）。時刻で置いたカットが無いプロジェクトの計算は変わらない
 - [x] P2 書き出しの長さ：`duration`（予定）・`frames` / `videoDuration`（書いた整数フレーム）・`audioDuration` を別々に返す
-- [ ] P1 文字組みを直接固定する操作：行・句ごとの layout / 大きさ / 位置 / 色 / 動き / 装飾、句の切り替え時刻（本家の `overrides`：`layout` `enter` `exit` `hold` `bg` `decor` `treat` `cuts` `cutTime` などを MCP から設定）。自動生成のシードとは分ける
-- [ ] P1 素材の再リンク：欠けている素材の診断（`missing` は済み）に加えて、素材込みの書き出し（Phase 4 の `.jizura.zip`）か、ファイル名とハッシュの対応表
-- [ ] P1 間奏でタイトルを出すかどうかを、タイトルの情報と分ける（本家の歌詞側の挙動なので、フック 1 行で足せるか調べる）
+- [x] P1 文字組みを直接固定する操作：`get_line` / `set_line_style`（CLI `--line-style`）。配置・動き・カメラ・背景グラフィック・装飾・カット数・句の開始時刻・固定は本家の `overrides`（行）と `cutTech`（カット）に書く。位置・大きさ・文字色は本家に無いので `project.media.text.lines` に持ち、計画のあとで当てる（`src/08m_media_text.js`：文字だけを動かす特別なカメラ `place`（おまかせでは選ばれない）と、その行用の配色の複製）。プレビューは 1 つの描画器を使い回すので、同じ作業の中では保存→開き直し後も同じ画素になる（本家の紙・粒子の質感は描画器ごとにランダムに作られるため）。**Web の画面からは、位置・大きさ・色はまだ変えられない**（Phase 3b の配置編集で）
+- [x] P1 素材の再リンク：`relink_media`（CLI `--relink`）。素材の id は中身の SHA-256 の先頭 12 桁なので、名前が変わっても見つかる。素材込みの書き出し（`.jizura.zip`）は Phase 4
+- [x] P1 間奏でタイトルを出すかどうか：`set_text_options(interlude_title=false)`（CLI `--no-interlude-title`）。`project.media.text.interludeTitle`。本家のファイルは変えず、計画のあとで間奏のカットの曲名だけを消す。Web の画面にはまだ無い
 - [ ] P2 1 回の制作の記録（使った project・素材のハッシュ・出力のパス）をまとめる run manifest
 
 ### Phase 4 — 統合・仕上げ

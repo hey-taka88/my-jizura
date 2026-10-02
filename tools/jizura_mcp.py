@@ -38,7 +38,9 @@ mcp = Server('jizura', instructions=(
     'Whisper or Suno JSON give timing) → load_song → add_media → set_look → preview (look at the frames: are the lyrics readable? '
     'raise dim or change the look if not) → export_mp4. get_plan shows every line with its time and picture. '
     'save_project / export_mp4 return the path actually written (`saved`): use that one afterwards. '
-    'A background clip for the whole song: add_timed_media (it runs on the song clock, not per line).'))
+    'A background clip for the whole song: add_timed_media (it runs on the song clock, not per line). '
+    'To fix how a line looks (layout, size, position, colour, motion, decorations, when its second phrase starts): set_line_style; '
+    'get_line shows what a line became. After open_project, relink_media brings back the pictures listed in `missing`.'))
 
 _jz = None
 _lock = asyncio.Lock()
@@ -201,6 +203,48 @@ async def add_timed_media(media: str, start: float = 0, end: float | None = None
 async def remove_timed_media(id: str = 'all') -> dict:
     """Remove a picture placed at a time (its id from add_timed_media / get_plan's `timed`), or 'all' of them."""
     return await call(lambda jz: jz.remove_timed_media(id))
+
+
+@mcp.tool()
+async def get_line(line: int) -> dict:
+    """One lyric line (1 = first, as in get_plan): its text and time, its own settings (style = layout / motion / decorations / cut times
+    set by hand, place = position / size / colour) and every cut it became, with the parts actually used (layout, enter, exit, hold,
+    cam, bg, decor, treat, trans, text colour)."""
+    return await call(lambda jz: jz.get_line(int(line)))
+
+
+@mcp.tool()
+async def set_line_style(line: int, cut: int | None = None, layout: str = '', enter: str = '', exit: str = '', hold: str = '', cam: str = '',
+                         trans: str = '', bg: str = '', decor: list[str] | None = None, treat: str = '', cuts: int | None = None,
+                         cut_times: list[float] | None = None, single: bool | None = None, x: float | None = None, y: float | None = None,
+                         size: float | None = None, color: str = '', lock: bool | None = None, reset: bool = False) -> dict:
+    """Fix how one lyric line looks (or only its cut `cut`, 1 = first) — independent of set_look's random picks, kept in the project.
+    Parts by key from options()['lyric'] (layout e.g. center / huge / vcols / lowerThird …; enter / exit / hold motions; cam; treat; bg
+    or 'none'; trans or 'none'); 'auto' returns one part to automatic. decor: list of decoration keys ([] = none). cuts: split the line
+    into that many cuts; cut_times: when cuts 2, 3 … start, in seconds from the line start (e.g. the second phrase); single: one cut.
+    x / y: move the lyric (-0.5 … 0.5 of the frame; y < 0 = up), size: 0.2 … 3 (1 = as laid out), color: '#rrggbb' text colour.
+    lock: keep exactly this look when other lines are changed or set_look runs. reset: clear everything set for the line.
+    Empty = unchanged. Check the result with preview at a time inside the line. Returns the line as get_line."""
+    return await call(lambda jz: jz.set_line_style(int(line), cut=cut, layout=layout or None, enter=enter or None, exit=exit or None,
+                                                    hold=hold or None, cam=cam or None, trans=trans or None, bg=bg or None, decor=decor,
+                                                    treat=treat or None, cuts=cuts, cut_times=cut_times, single=single, x=x, y=y, size=size,
+                                                    color=color or None, lock=lock, reset=reset))
+
+
+@mcp.tool()
+async def set_text_options(interlude_title: bool | None = None) -> dict:
+    """interlude_title: show the song title / artist on long interludes (default true). The title stays in the project (and in
+    get_plan) either way — this only decides whether the wordless interlude shows it."""
+    return await call(lambda jz: jz.set_text_options(interlude_title=interlude_title))
+
+
+@mcp.tool()
+async def relink_media(paths: list[str]) -> dict:
+    """Bring back the pictures / clips an opened project names but has not loaded (get_plan's `missing`): give files or folders in
+    the working folder; they are matched by content (a renamed file is found, a different file with the same name is not).
+    Returns relinked names, the files used, and what is still missing."""
+    ps = [inside(x) for x in paths]
+    return await call(lambda jz: jz.relink_media(ps))
 
 
 @mcp.tool()

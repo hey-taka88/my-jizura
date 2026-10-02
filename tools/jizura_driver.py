@@ -90,6 +90,9 @@ JS_STATUS = r"""async () => {
 JS_OPTIONS = r"""() => ({
   themes: Object.fromEntries(J.THEME_ORDER.map(k => [k, J.THEMES[k].name])),
   transitions: Object.fromEntries(J.media.TRANS_KEYS.filter(k => J.TRANS[k]).map(k => [k, J.TRANS[k].name])),
+  // the lyric parts set_line_style accepts (key → name), as the line editor lists them
+  lyric: Object.fromEntries(['layout', 'enter', 'exit', 'hold', 'cam', 'treat', 'bg', 'decor', 'trans'].map(g =>
+    [g, Object.fromEntries(J.order(g).filter(k => !(J.registry(g)[k] || {}).special).map(k => [k, J.registry(g)[k].name]))])),
   styles: Object.fromEntries(J.STYLE_ORDER.map(k => [k, J.STYLES[k].name])),
   moods: Object.fromEntries(Object.keys(J.MOODS).map(k => [k, J.MOODS[k].name])),
 })"""
@@ -167,6 +170,52 @@ JS_ADD_TIMED = r"""(o) => {
   return c.id;
 }"""
 
+# one lyric line: its own settings and the cuts it became
+JS_LINE = r"""(li) => {
+  const S = J.ui, P = S.project, ln = S.plan.lines[li], ov = P.overrides[li] || {}, T = P.media.text.lines[li] || {};
+  const r2 = x => Math.round(x * 100) / 100 || 0;
+  const style = {};
+  for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime', 'cutTech', 'lock']) if (ov[k] != null) style[k] = ov[k];
+  if (style.cutTime) style.cutTime = Object.keys(style.cutTime).sort((a, b) => a - b).map(k => style.cutTime[k]);
+  return { line: li + 1, text: ln.text, start: r2(ln.start), end: r2(ln.end), interlude: !!ln.interlude, style, place: T,
+    cuts: J.media.lineCuts(S.plan, li).map((c, k) => ({ cut: k + 1, text: c.utext, start: r2(c.start), end: r2(c.end), layout: c.layout,
+      enter: c.enter, exit: c.exit, hold: c.hold, cam: c.cam === 'place' ? (c.camP || {}).base : c.cam, bg: c.bg, decor: (c.decor || []).map(d => d.id),
+      treat: c.treat, trans: c.trans || null, color: (S.plan.style.schemes[c.scheme] || {}).fg })) };
+}"""
+
+JS_SET_LINE_STYLE = r"""(o) => {
+  const S = J.ui, P = S.project, li = o.li, m = P.media;
+  const ov = Object.assign({}, P.overrides[li] || {});
+  const wasLocked = !!ov.lock; delete ov.lock; delete ov.lockedSeed; delete ov.lockedCuts;   // re-locked below with the new look
+  const put = (obj, k, v) => { if (v === undefined) return; if (v === null || v === 'auto') delete obj[k]; else obj[k] = v; };
+  if (o.cut == null) {
+    for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime']) put(ov, k, o[k]);
+  } else {                                       // このカットだけ (the app's cutTech: layout / motion / camera / treatment / transition)
+    const ct = Object.assign({}, ov.cutTech || {}), t = Object.assign({}, ct[o.cut] || {});
+    for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'treat']) put(t, k, o[k]);
+    if (Object.keys(t).length) ct[o.cut] = t; else delete ct[o.cut];
+    if (Object.keys(ct).length) ov.cutTech = ct; else delete ov.cutTech;
+  }
+  // placement / size / colour (project.media.text)
+  const lines = Object.assign({}, m.text.lines), L = Object.assign({}, lines[li] || {});
+  const tg = o.cut == null ? L : Object.assign({}, (L.cuts || {})[o.cut] || {});
+  for (const [k, v] of [['x', o.x], ['y', o.y], ['scale', o.size], ['color', o.color]]) put(tg, k, v);
+  if (o.cut != null) { const cs = Object.assign({}, L.cuts || {}); if (Object.keys(tg).length) cs[o.cut] = tg; else delete cs[o.cut]; if (Object.keys(cs).length) L.cuts = cs; else delete L.cuts; }
+  if (o.reset) { for (const k of Object.keys(ov)) delete ov[k]; for (const k of Object.keys(L)) delete L[k]; }
+  if (Object.keys(L).length) lines[li] = L; else delete lines[li];
+  m.text = Object.assign({}, m.text, { lines });
+  P.media = J.media.normalize(m);
+  if (Object.keys(ov).length) P.overrides[li] = ov; else delete P.overrides[li];
+  J.uiApi.replan();
+  // 固定: the line keeps exactly this look when other lines are rolled again (the app's line lock)
+  if (o.lock === true || (o.lock == null && wasLocked && !o.reset)) {
+    const ln = S.plan.lines[li];
+    P.overrides[li] = Object.assign({}, P.overrides[li] || {}, { lock: true, lockedSeed: ln.seed, lockedCuts: J.lineSnapshot(S.plan, li) || undefined });
+    J.uiApi.replan();
+  }
+  J.uiApi.flushSave();
+}"""
+
 JS_SET_LOOK = r"""(o) => {
   const S = J.ui, P = S.project;
   if ('theme' in o) P.themeId = o.theme && J.THEMES[o.theme] ? o.theme : null;
@@ -208,9 +257,11 @@ JS_PREVIEW = r"""async ([times, width]) => {
   const w = Math.max(64, Math.round(width / 2) * 2), h = Math.max(36, Math.round(width * plan.H / plan.W / 2) * 2);
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d', { alpha: false }), out = [];
+  // one renderer for every preview of this page: its paper / grain textures are made once (at random), so frames compare across calls
+  const R = window.__jzR || (window.__jzR = new J.Renderer());
   for (const t of times) {
     if (plan.media) await J.media.prepareFrame(plan, t);          // clips at their exact frame, as in an export
-    new J.Renderer().frame(x, plan, t, { scale: w / plan.W });
+    R.frame(x, plan, t, { scale: w / plan.W });
     const ln = plan.lines.find(l => t >= l.start && t < l.end);
     out.push({ t, text: ln ? ln.text : '', png: c.toDataURL('image/png').split(',')[1] });
   }
@@ -441,6 +492,92 @@ class Jizura:
           back.cuts = back.cuts.filter(c => c.lineRef || (id !== 'all' && c.id !== id)); J.uiApi.replan(); J.uiApi.flushSave(); return before - back.cuts.length; }''', str(id))
         if not n: raise JizuraError(f'時刻で置いた画像・動画が見つかりません: {id}')
         return {'removed': n, 'timed': (await self.get_plan())['timed']}
+
+    async def _line_index(self, line):
+        n = await self._ev('() => J.ui.plan.lines.length')
+        if not (isinstance(line, int) and 1 <= line <= n): raise JizuraError(f'line は 1〜{n}: {line}')
+        return line - 1
+
+    async def get_line(self, line):
+        """one lyric line (1 = first): its text and time, its own settings (style: the app's per-line settings, place: position /
+        size / colour) and the cuts it became (text, time, layout, motion, camera, background, decorations, colour)"""
+        return await self._ev(JS_LINE, await self._line_index(line))
+
+    async def set_line_style(self, line, cut=None, layout=None, enter=None, exit=None, hold=None, cam=None, trans=None, bg=None, decor=None,
+                             treat=None, cuts=None, cut_times=None, single=None, x=None, y=None, size=None, color=None, lock=None, reset=False):
+        """fix how a lyric line looks (or only its cut `cut`, 1 = first). Parts by key (see options()['lyric']); 'auto' = back to automatic.
+        cuts: how many cuts the line is split into; cut_times: when cuts 2, 3 … start (seconds from the line start); single: one cut.
+        x / y: move the lyric (-0.5 … 0.5 of the frame), size: 0.2 … 3, color: '#rrggbb' text colour.
+        lock: keep exactly this look when other lines change (a locked line is re-locked after a change). reset: clear everything"""
+        li = await self._line_index(line)
+        O = (await self.options())['lyric']
+        o = {'li': li}
+        for k, v in (('layout', layout), ('enter', enter), ('exit', exit), ('hold', hold), ('cam', cam), ('treat', treat), ('bg', bg)):
+            if v is None: continue
+            ok = list(O[k]) + ['auto'] + (['none'] if k in ('bg', 'treat') else [])
+            if v not in ok: raise JizuraError(f'{k} は options の lyric.{k} のどれか（または auto）: {v}')
+            o[k] = v
+        if trans is not None:
+            if trans not in list(O['trans']) + ['auto', 'none']: raise JizuraError(f'trans は options の lyric.trans・none・auto のどれか: {trans}')
+            o['trans'] = trans
+        if cut is not None:
+            n = len((await self.get_line(line))['cuts'])
+            if not (isinstance(cut, int) and 1 <= cut <= max(n, 12)): raise JizuraError(f'cut は 1〜{n}: {cut}')
+            if any(v is not None for v in (bg, decor, cuts, cut_times, single)): raise JizuraError('bg / decor / cuts / cut_times / single は行全体の指定です（cut なしで）')
+            o['cut'] = cut - 1
+        if decor is not None:
+            if decor == 'auto': o['decor'] = 'auto'
+            else:
+                bad = [d for d in decor if d not in O['decor']]
+                if bad: raise JizuraError(f'decor にない装飾: {bad}')
+                o['decor'] = list(decor)
+        if cuts is not None:
+            if cuts != 'auto' and not (isinstance(cuts, int) and 1 <= cuts <= 12): raise JizuraError(f'cuts は 1〜12 か auto: {cuts}')
+            o['cuts'] = cuts
+        if cut_times is not None:
+            if cut_times == 'auto' or not cut_times: o['cutTime'] = 'auto'
+            else:
+                ts = [float(t) for t in cut_times]
+                if any(t <= 0 for t in ts) or ts != sorted(ts): raise JizuraError(f'cut_times は行の頭からの秒（増えていく順）: {cut_times}')
+                o['cutTime'] = {str(i + 1): t for i, t in enumerate(ts)}
+                if cuts is None: o['cuts'] = len(ts) + 1
+        if single is not None: o['single'] = True if single else 'auto'
+        for k, v, lo, hi in (('x', x, -0.5, 0.5), ('y', y, -0.5, 0.5), ('size', size, 0.2, 3)):
+            if v is None: continue
+            if v == 'auto': o[k] = 'auto'; continue
+            if not (lo <= float(v) <= hi): raise JizuraError(f'{k} は {lo}〜{hi}: {v}')
+            o[k] = float(v)
+        if color is not None:
+            if color != 'auto' and not re.match(r'^#[0-9a-fA-F]{6}$', str(color)): raise JizuraError(f'color は #rrggbb: {color}')
+            o['color'] = color
+        if lock is not None: o['lock'] = bool(lock)
+        if reset: o['reset'] = True
+        await self._ev(JS_SET_LINE_STYLE, o)
+        return await self.get_line(line)
+
+    async def set_text_options(self, interlude_title=None):
+        """interlude_title: show the song title / artist on long interludes (the title stays in the project either way)"""
+        if interlude_title is not None:
+            await self._ev('''(v) => { const m = J.ui.project.media; m.text = Object.assign({}, m.text, { interludeTitle: v ? 'show' : 'hide' });
+              J.ui.project.media = J.media.normalize(m); J.uiApi.replan(); J.uiApi.flushSave(); }''', bool(interlude_title))
+        return {'interludeTitle': await self._ev('() => J.ui.project.media.text.interludeTitle') == 'show'}
+
+    async def relink_media(self, paths):
+        """bring back the pictures / clips a project names but this browser has not loaded: files are matched by their content
+        (the id is the start of their SHA-256), so a renamed file is found too and a different file with the same name is not"""
+        import hashlib
+        missing = await self._ev('() => J.ui.project.media.assets.filter(a => !J.mediaAssets.has(a.id)).map(a => [a.id, a.name])')
+        want = {i: n for i, n in missing}
+        hits, seen = [], set()
+        for f in media_files(paths):
+            h = hashlib.sha256()
+            with open(f, 'rb') as fh:
+                for b in iter(lambda: fh.read(1 << 20), b''): h.update(b)
+            i = h.hexdigest()[:12]
+            if i in want and i not in seen: hits.append(f); seen.add(i)
+        if hits: await self.add_media(hits)
+        still = await self._ev('() => J.ui.project.media.assets.filter(a => !J.mediaAssets.has(a.id)).map(a => a.name)')
+        return {'relinked': [want[i] for i in seen], 'files': [os.path.basename(f) for f in hits], 'missing': still}
 
     async def set_line_media(self, line, media):
         """the picture behind lyric line `line` (1 = first): a name / id / number, 'none' (画像なし) or 'auto' (in turn)"""
