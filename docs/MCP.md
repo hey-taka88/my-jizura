@@ -71,7 +71,8 @@ tool_timeout_sec = 1800
 | `list_files` | 作業フォルダの歌詞・曲・画像・動画・プロジェクトの一覧 |
 | `status` | 使っているブラウザと、H.264 を読み書きできるか |
 | `options` | テーマ・スタイル・雰囲気・画面比など、選べる値の一覧 |
-| `new_project` / `open_project` / `save_project` | プロジェクトを新しく作る・開く（`.jizura.json`）・保存する |
+| `new_project` / `open_project` / `save_project` | プロジェクトを新しく作る・開く（`.jizura.json`）・保存する。保存は `{requested, saved, collision}` を返すので、次に開くときは **`saved`** を使う。`replace=true` で、このサーバーが今回書いたファイルなら同じ名前に上書き。開いたときに読み込まれていない画像・動画は `missing` に出る |
+| `add_timed_media` / `remove_timed_media` | 曲の時刻で画像・動画を置く（例：曲全体に 1 本の背景動画）。行ごとの自動の画像より優先、行ごとに選んだ画像よりは下。動画は曲の時計で流れ続け、行の切り替えで頭に戻らない |
 | `set_lyrics` | 歌詞を入れる（LRC・SRT・VTT・Whisper / Suno の JSON は時刻付き、テキストは 1 行 1 フレーズ） |
 | `load_song` | 曲を読み込む（長さとテンポを解析） |
 | `add_media` / `remove_media` | 画像・動画を足す（フォルダなら名前順）・外す |
@@ -82,12 +83,12 @@ tool_timeout_sec = 1800
 | `set_output` | 画面比・解像度・fps・画質 |
 | `get_plan` | 各行の時刻・歌詞・表示される画像、見た目、曲の情報 |
 | `preview` | その時刻のフレームを画像で返す（モデルが見て判断できる） |
-| `export_mp4` | MP4 を作業フォルダに書き出す（一部の秒だけも可） |
+| `export_mp4` | MP4 を作業フォルダに書き出す（一部の秒だけも可）。保存と同じく `saved` と `replace`。長さは予定（`duration`）・書いたフレーム数と映像の長さ（`frames` / `videoDuration`）・音声の長さ（`audioDuration`）を別々に返す |
 
 ### 安全のしくみ
 
 - 読み書きは作業フォルダの中だけ。外のパス（`../` など）はエラーになります
-- 既存のファイルは上書きしません（`mv.mp4` があれば `mv-2.mp4` に書きます）
+- 前からあるファイルは上書きしません（`mv.mp4` があれば `mv-2.mp4` に書き、返り値の `saved` で知らせます）。`replace=true` で上書きできるのは、このサーバーが今回書いたファイルだけです
 - ページが外に出られるのは、このアプリと Google Fonts（文字の形を取ってくる）だけです
 - 毎回まっさらなブラウザで開きます。続きはプロジェクトを保存して `open_project` で開き直します（画像は `add_media` で入れ直すと、中身で見分けて行ごとの指定が戻ります）
 
@@ -98,6 +99,7 @@ tool_timeout_sec = 1800
 - 「写真の切り替えをもっと派手に。いろいろな切り替え効果で、写真はスタイルの色に寄せて」
 - 「3 行目は `sunset.jpg`、サビ前の行は画像なしにして」
 - 「同じ設定で 9:16 も書き出して。ファイル名は `mv_vertical.mp4`」
+- 「`bg.mp4` を曲全体の背景にして（行ごとに頭から再生しないで）。サビの 1 行目だけ `sunset.jpg` に」
 
 ## コマンドで使う（MCP なし）
 
@@ -114,7 +116,7 @@ python3 tools/jizura_cli.py plan --project out/mv.jizura.json --media pics/
 python3 tools/jizura_cli.py info
 ```
 
-ほかの指定：`--line-media 3=sunset.jpg`（何度でも）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
+ほかの指定：`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
 `--res 720`、`--fps 30`、`--range 30-45`（その秒だけ）、`--no-audio`、`--force`（上書き）。一覧は `python3 tools/jizura_cli.py render -h`。
 
 ## うまくいかないとき

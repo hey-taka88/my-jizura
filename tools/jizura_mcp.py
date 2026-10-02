@@ -36,7 +36,9 @@ mcp = Server('jizura', instructions=(
     'JIZURA makes lyric motion videos (文字PV) for a song: animated lyrics over pictures and video clips. '
     f'All paths are relative to the working folder {WORK}. Typical flow: list_files → new_project → set_lyrics (LRC / SRT / VTT / '
     'Whisper or Suno JSON give timing) → load_song → add_media → set_look → preview (look at the frames: are the lyrics readable? '
-    'raise dim or change the look if not) → export_mp4. get_plan shows every line with its time and picture.'))
+    'raise dim or change the look if not) → export_mp4. get_plan shows every line with its time and picture. '
+    'save_project / export_mp4 return the path actually written (`saved`): use that one afterwards. '
+    'A background clip for the whole song: add_timed_media (it runs on the song clock, not per line).'))
 
 _jz = None
 _lock = asyncio.Lock()
@@ -62,14 +64,24 @@ def inside(rel, must_exist=True):
     return p
 
 
-def fresh(rel, ext):
-    """an output path in the working folder that does not exist yet (name, name-2, name-3 …)"""
-    if not rel.lower().endswith(ext): rel += ext
-    p = inside(rel, must_exist=False)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    base, k = p[:-len(ext)], 2
-    while os.path.exists(p): p = f'{base}-{k}{ext}'; k += 1
-    return p
+_written = set()       # files this server wrote in this session (only those may be replaced)
+
+
+def target(rel_path, ext, replace=False):
+    """where an output goes → (path, info). A new name: as asked. A name that exists: with replace, the same file again when
+    this server wrote it in this session (a file that was there before is never replaced); otherwise the next free name
+    (name-2, name-3 …). info = {requested, saved, collision: new | renamed | replaced}: use `saved` in the next calls."""
+    if not rel_path.lower().endswith(ext): rel_path += ext
+    req = inside(rel_path, must_exist=False)
+    os.makedirs(os.path.dirname(req), exist_ok=True)
+    if not os.path.exists(req): p, how = req, 'new'
+    elif replace and req in _written: p, how = req, 'replaced'
+    elif replace: raise ToolError(f'作業フォルダに前からあるファイルは置き換えません（置き換えられるのは、このサーバーが今回書いたファイルだけ）: {rel_path}')
+    else:
+        base, k, p = req[:-len(ext)], 2, req
+        while os.path.exists(p): p = f'{base}-{k}{ext}'; k += 1
+        how = 'renamed'
+    return p, {'requested': os.path.relpath(req, WORK), 'saved': os.path.relpath(p, WORK), 'collision': how}
 
 
 rel = lambda p: os.path.relpath(p, WORK)
@@ -124,18 +136,21 @@ async def new_project(title: str = '', artist: str = '', aspect: str = '16:9', l
 
 @mcp.tool()
 async def open_project(path: str) -> dict:
-    """Open a saved .jizura.json from the working folder. Pictures are not inside the file: add them again with add_media
-    (they are recognised by content, so each line gets its picture back). Returns the plan."""
+    """Open a saved .jizura.json from the working folder (use the `saved` path that save_project returned). Pictures and clips are
+    not inside the file: the plan's `missing` lists the ones to add again with add_media (they are recognised by content, so every
+    line and timed placement gets its picture back). Returns the plan."""
     p = inside(path)
     return await call(lambda jz: jz.open_project(p))
 
 
 @mcp.tool()
-async def save_project(path: str = 'project.jizura.json') -> dict:
-    """Save the project as .jizura.json in the working folder (a new name if it exists). It can be opened in the app in a browser too."""
+async def save_project(path: str = 'project.jizura.json', replace: bool = False) -> dict:
+    """Save the project as .jizura.json in the working folder (it opens in the app in a browser too). When the name exists:
+    replace=true writes over it if this server saved it earlier in this session (never over a file that was there before);
+    otherwise a new name is chosen. Returns {requested, saved, collision: new | renamed | replaced} — open / use `saved`."""
     async def f(jz):
-        p = fresh(path[:-12] if path.lower().endswith('.jizura.json') else path, '.jizura.json')
-        await jz.save_project(p); return {'saved': rel(p)}
+        p, info = target(path[:-12] if path.lower().endswith('.jizura.json') else path, '.jizura.json', replace)
+        await jz.save_project(p); _written.add(p); return info
     return await call(f)
 
 
@@ -170,6 +185,22 @@ async def remove_media(media: str) -> dict:
     """Remove a picture / clip (by name, or its number in get_plan's media list)."""
     async def f(jz): return {'media': await jz.remove_media(media)}
     return await call(f)
+
+
+@mcp.tool()
+async def add_timed_media(media: str, start: float = 0, end: float | None = None, clip_start: float | None = None, fit: str = '') -> dict:
+    """Place a picture or clip at a time of the song (seconds) instead of per lyric line — e.g. one background clip under the whole
+    song: start=0 and no end (end = the next timed placement, or the end of the song). It covers the automatic per-line pictures in
+    that time; a picture chosen for a line (set_line_media) still shows over it, and a clip keeps running on the song's clock (it never
+    jumps back to its start at a lyric line, and any seek shows the same frame). media: a name or number, or 'none' (no picture then).
+    clip_start: where in the clip to begin. fit: cover | contain. Returns its id and every timed placement."""
+    return await call(lambda jz: jz.add_timed_media(media, start=start, end=end, clip_start=clip_start, fit=fit or None))
+
+
+@mcp.tool()
+async def remove_timed_media(id: str = 'all') -> dict:
+    """Remove a picture placed at a time (its id from add_timed_media / get_plan's `timed`), or 'all' of them."""
+    return await call(lambda jz: jz.remove_timed_media(id))
 
 
 @mcp.tool()
@@ -245,18 +276,20 @@ async def preview(times: list[float] | None = None, count: int = 4, width: int =
 
 @mcp.tool()
 async def export_mp4(path: str = 'jizura.mp4', res: int | None = None, start: float | None = None, end: float | None = None,
-                     audio: bool = True, quality: str = '', ctx: Context = None) -> dict:
-    """Write the MP4 into the working folder (a new name if it exists). start / end: only that part (seconds). Takes a while:
-    roughly as long as the song or several times longer, depending on the computer and resolution. Returns size, codec, audio."""
+                     audio: bool = True, quality: str = '', replace: bool = False, ctx: Context = None) -> dict:
+    """Write the MP4 into the working folder. A name that exists: replace=true writes over it if this server wrote it earlier in this
+    session, otherwise a new name is chosen (see `saved`). start / end: only that part (seconds). Takes a while: roughly as long as
+    the song or several times longer, depending on the computer and resolution. Returns size, codec, audio, and the lengths:
+    duration (planned), frames / videoDuration (whole frames written), audioDuration."""
     async def f(jz):
-        p = fresh(path, '.mp4')
+        p, info = target(path, '.mp4', replace)
         task = asyncio.ensure_future(jz.export_mp4(p, res=res, t0=start, t1=end, audio=audio, quality=quality or None))
         while not task.done():
             await asyncio.wait([task], timeout=5)
             if ctx is not None and jz.progress and not task.done():
                 try: await ctx.report_progress(round(jz.progress[0] * 100, 1), 100, jz.progress[1])
                 except Exception: pass
-        r = task.result(); r['path'] = rel(p); return r
+        r = task.result(); _written.add(p); r.update(info); r['path'] = info['saved']; return r
     return await call(f)
 
 

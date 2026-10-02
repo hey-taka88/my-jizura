@@ -354,6 +354,18 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 7. 「メディアのおまかせ」ボタン（配置パターン・保持・つなぎをシードで振り直し）
 - 受け入れ：グリーンバックの立ち絵動画を前景に置き、歌詞の上で抜けている MP4 が出る。scrim ON で白背景の写真の上でも白文字が読める。全部品の smoke が通る
 
+### 実制作からのフィードバック（2026-10-02、Codex が MCP で「あの日の青」を制作）
+
+30 行の歌詞と曲全体の背景動画 1 本で MV を作った報告から。1 曲専用の値（カット数・配色・文字サイズ）はアプリの規則にしない。中央の大きな文字など、文字が主役の表現も残す。
+
+- [x] **P0 保存したファイルの再利用**：`save_project` / `export_mp4` は `{requested, saved, collision: new|renamed|replaced}` を返す。`replace=true` は、このサーバーが今回書いたファイルだけ上書き（前からあるファイルは上書きしない方針はそのまま）。`open_project` / `get_plan` は読み込まれていない素材を `missing` に出す
+- [x] **P0 曲の時刻で置く背景**：`add_timed_media` / `remove_timed_media`（CLI は `--timed-media 名前@開始-終了`）。優先順は「行ごとに選んだ画像 ＞ 時刻で置いた画像 ＞ 行ごとの自動」。時刻で置いた動画は `anchor`（置いた時刻）から曲の時計で流れ、行や割り込みで頭に戻らない（`M.videoTimes` が `c.anchor` を使う）。時刻で置いたカットが無いプロジェクトの計算は変わらない
+- [x] P2 書き出しの長さ：`duration`（予定）・`frames` / `videoDuration`（書いた整数フレーム）・`audioDuration` を別々に返す
+- [ ] P1 文字組みを直接固定する操作：行・句ごとの layout / 大きさ / 位置 / 色 / 動き / 装飾、句の切り替え時刻（本家の `overrides`：`layout` `enter` `exit` `hold` `bg` `decor` `treat` `cuts` `cutTime` などを MCP から設定）。自動生成のシードとは分ける
+- [ ] P1 素材の再リンク：欠けている素材の診断（`missing` は済み）に加えて、素材込みの書き出し（Phase 4 の `.jizura.zip`）か、ファイル名とハッシュの対応表
+- [ ] P1 間奏でタイトルを出すかどうかを、タイトルの情報と分ける（本家の歌詞側の挙動なので、フック 1 行で足せるか調べる）
+- [ ] P2 1 回の制作の記録（使った project・素材のハッシュ・出力のパス）をまとめる run manifest
+
 ### Phase 4 — 統合・仕上げ
 
 1. 素材同梱ファイル `.jizura.zip`（保存・開く・「素材が足りない」の警告）

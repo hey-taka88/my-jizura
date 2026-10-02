@@ -2,7 +2,7 @@
    my-jizura (fork) — media layer: project.media → plan.media
    Deterministic: the same project + lyrics timing always gives the same media cuts.
    plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
-   cut = { index, assetId, type, start, end, dur, line, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v }
+   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v }
    join: how it takes over from the picture right before ('fade' / 'cut' / a J.TRANS key), null when nothing touches it
    ============================================================ */
 (() => {
@@ -36,25 +36,41 @@ function resolveTrack(m, k, plan) {
   for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
   const next = ids.length ? sequence(ids, A) : null;
   const lines = (plan.lines || []).slice().sort((a, b) => a.start - b.start);
-  let segs = [], n = 0;
+  // what each lyric line shows: a picture chosen for that line (own), or the next one of the automatic order
+  const auto = [], own = [];
+  let n = 0;
   if (!lines.length) {
-    if (A.mode === 'perLine' && next) segs.push({ assetId: next(0), start: 0, end: D, line: -1, src: null });
+    if (A.mode === 'perLine' && next) auto.push({ assetId: next(0), start: 0, end: D, line: -1, src: null });
   } else {
     lines.forEach((ln, j) => {
       const start = j === 0 ? 0 : ln.start;                 // the first image also covers the intro / title card
       const end = j + 1 < lines.length ? lines[j + 1].start : D;
       if (!(end - start > 0.02)) return;
       const ov = byLine.get(ln.index);
-      let id = null;
-      if (ov) id = ov.assetId && known.has(ov.assetId) ? ov.assetId : null;     // a line set to 「なし」 stays empty
-      else if (A.mode === 'perLine' && next) id = next(n++);
-      if (id) segs.push({ assetId: id, start, end, line: ln.index, src: ov || null });
+      if (ov) own.push({ assetId: ov.assetId && known.has(ov.assetId) ? ov.assetId : null, start, end, line: ln.index, src: ov });   // 「なし」 stays empty
+      else if (A.mode === 'perLine' && next) auto.push({ assetId: next(n++), start, end, line: ln.index, src: null });
     });
   }
-  // cuts placed at a time (no editor for them yet): end = the next cut's start
-  for (const c of timed) if (c.assetId && known.has(c.assetId) && c.start < D) segs.push({ assetId: c.assetId, start: c.start, end: c.end, line: -1, src: c });
+  // pictures placed at a time of the song (a clip under the whole song, a picture for a section): end = given, else the next one's start.
+  // They cover the automatic pictures; a picture chosen for a line still shows over them, and a clip keeps its own clock
+  // (anchor) around it, so it never jumps back to its start at a lyric line.
+  const tl = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
+    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : i + 1 < arr.length ? arr[i + 1].start : D) }))
+    .filter(x => x.e - x.s > 0.02);
+  const cut = (list, holes) => {                            // the parts of each [start, end) outside the holes
+    const out = [];
+    for (const g of list) {
+      let pieces = [[g.start, g.end]];
+      for (const h of holes) pieces = pieces.flatMap(([a, b]) => (h.e <= a || h.s >= b ? [[a, b]] : [[a, Math.min(b, h.s)], [Math.max(a, h.e), b]]));
+      for (const [a, b] of pieces) if (b - a > 0.02) out.push(Object.assign({}, g, { start: a, end: b }));
+    }
+    return out;
+  };
+  let segs = cut(auto, tl).concat(own)
+    .concat(cut(tl.map(x => ({ assetId: x.c.assetId, start: x.s, end: x.e, line: -1, src: x.c, anchor: x.s })), own.map(o => ({ s: o.start, e: o.end }))))
+    .filter(s => s.assetId && known.has(s.assetId));
   segs.sort((a, b) => a.start - b.start);
-  segs.forEach((s, i) => { if (s.end == null) s.end = i + 1 < segs.length ? segs[i + 1].start : D; s.end = Math.min(s.end, D); });
+  segs.forEach(s => { s.end = Math.min(s.end, D); });
   segs = segs.filter(s => s.end - s.start > 0.02);
   // one automatic image over several lines in a row stays one cut (its slow move does not restart)
   const merged = [];
@@ -99,6 +115,7 @@ function resolveTrack(m, k, plan) {
     const outDur = exit === 'cut' ? 0 : Math.min(exit === 'fade' ? 0.45 : 0.6, dur * 0.25);
     out.cuts.push({
       index: i, assetId: s.assetId, type: isVideo ? 'video' : 'image', start: s.start, end: s.end, dur, line: s.line,
+      anchor: s.anchor != null ? s.anchor : s.start, timed: !!(src && !src.lineRef),
       fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
       join, transP, inDur, outDur, dir, treat: own('treat', A.treat || 'none'),
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
@@ -135,7 +152,7 @@ M.videoTimes = (plan, c, t) => {
     if (q < L - o) return { main: at(q) };
     return { main: at(q), alt: at(q - (L - o)), k: (q - (L - o)) / o };
   };
-  const u = Math.max(0, t - c.start) * v.rate;
+  const u = Math.max(0, t - (c.anchor != null ? c.anchor : c.start)) * v.rate;     // a clip placed at a time runs on its own clock
   switch (v.extend) {
     case 'hold': return { main: at(u) };
     case 'pingpong': { const m = u % (2 * L); return { main: at(m <= L ? m : 2 * L - m) }; }
@@ -146,10 +163,11 @@ M.videoTimes = (plan, c, t) => {
 /* the start of the bar (every n beats, counted from the first beat in the cut) that t is in; the cut start when there are no beats */
 function barStart(plan, c, t, n) {
   const B = plan.beats || [];
-  if (!B.length) return c.start;
+  if (!B.length) return c.anchor != null ? c.anchor : c.start;
   const last = i => { let lo = 0, hi = B.length - 1, ans = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (B[m] <= i) { ans = m; lo = m + 1; } else hi = m - 1; } return ans; };
-  const i0 = last(c.start - 0.05) + 1, it = last(t);
-  if (i0 >= B.length || it < i0) return c.start;
+  const c0 = c.anchor != null ? c.anchor : c.start;
+  const i0 = last(c0 - 0.05) + 1, it = last(t);
+  if (i0 >= B.length || it < i0) return c0;
   return B[i0 + Math.floor((it - i0) / n) * n];
 }
 

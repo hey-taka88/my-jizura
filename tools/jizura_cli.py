@@ -41,6 +41,8 @@ def common(p):
     g.add_argument('--extend', choices=VIDEO_EXTEND, help='動画が行より短いとき')
     g.add_argument('--rate', type=float, choices=VIDEO_RATES); g.add_argument('--beats', type=int, choices=VIDEO_BEATS)
     g.add_argument('--line-media', action='append', default=[], metavar='行=画像', help='行ごとの画像（例 3=sunset.jpg、5=none）。何度でも')
+    g.add_argument('--timed-media', action='append', default=[], metavar='画像@開始-終了',
+                   help='曲の時刻で置く画像・動画（例 bg.mp4@0- で曲全体、city.jpg@30-45）。行の切り替えで頭に戻らない。何度でも')
     g = p.add_argument_group('出力')
     g.add_argument('--aspect', action='append', choices=ASPECTS, help='画面比（何度でも。2 つ以上なら比率ごとにファイル）')
     g.add_argument('--res', type=int, choices=RES); g.add_argument('--fps', type=int, choices=FPS)
@@ -68,6 +70,13 @@ async def setup(jz, a, aspect):
     mo = dict(order=a.order, hold=a.hold, fit=a.fit, dim=a.dim, lyric_bg=True if a.lyric_bg else None, shuffle=a.shuffle, extend=a.extend, rate=a.rate, beats=a.beats,
               trans=a.trans, enter=a.enter, exit=a.enter, treat=a.treat, scrim=a.scrim)
     if any(v is not None for v in mo.values()): await jz.set_media_options(**mo)
+    for s in a.timed_media:
+        name, _, rng = s.rpartition('@')
+        t0, _, t1 = rng.partition('-')
+        try: t0 = float(t0 or 0); t1 = float(t1) if t1 else None
+        except ValueError: raise JizuraError(f'--timed-media は 画像@開始-終了 の形で: {s}')
+        if not name: raise JizuraError(f'--timed-media は 画像@開始-終了 の形で: {s}')
+        r = await jz.add_timed_media(name, start=t0, end=t1); log(f'時刻で配置: {name} {t0:g}〜{"" if t1 is None else f"{t1:g}"} 秒（{r["id"]}）')
     for s in a.line_media:
         k, _, v = s.partition('=')
         if not k.strip().isdigit() or not v: raise JizuraError(f'--line-media は 行=画像 の形で: {s}')

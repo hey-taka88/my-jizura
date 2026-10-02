@@ -98,7 +98,7 @@ JS_OPTIONS = r"""() => ({
 JS_PLAN = r"""() => {
   const S = J.ui, P = S.project, plan = S.plan, m = P.media, mp = plan.media;
   const name = id => { const a = J.media.assetById(P, id); return a ? a.name : null; };
-  const r2 = x => Math.round(x * 100) / 100;
+  const r2 = x => Math.round(x * 100) / 100 || 0;      // (never -0)
   const own = new Map(m.tracks.back.cuts.filter(c => c.lineRef).map(c => [c.lineRef.line, c.assetId]));
   return {
     title: P.title, artist: P.artist, aspect: P.aspect, res: P.res, fps: P.fps, quality: P.quality || 'high', includeAudio: P.includeAudio !== false,
@@ -114,7 +114,11 @@ JS_PLAN = r"""() => {
     mediaOptions: { auto: m.autoFill.back.mode === 'perLine', order: m.autoFill.back.order, hold: m.autoFill.back.hold, fit: m.autoFill.back.fit,
       dim: m.tracks.back.dim, lyricBg: m.lyricBg, shuffle: m.autoFill.back.seed, video: m.autoFill.back.video,
       trans: m.autoFill.back.trans, enter: m.autoFill.back.enter, exit: m.autoFill.back.exit, treat: m.autoFill.back.treat, scrim: m.scrim.mode, scrimAmount: m.scrim.amount },
-    cuts: mp ? mp.back.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end) })) : [],
+    cuts: mp ? mp.back.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end), timed: !!c.timed })) : [],
+    // pictures placed at a time of the song (add_timed_media): over the automatic ones, under the ones chosen for a line
+    timed: m.tracks.back.cuts.filter(c => !c.lineRef).map(c => ({ id: c.id, media: c.assetId ? name(c.assetId) : 'none', start: r2(c.start), end: c.end == null ? null : r2(c.end),
+      clipStart: c.video && c.video.start != null ? c.video.start : null })),
+    missing: m.assets.filter(a => !J.mediaAssets.has(a.id)).map(a => a.name),   // in the project but not loaded: add_media them again
   };
 }"""
 
@@ -149,6 +153,18 @@ JS_SET_LINE = r"""([i, v]) => {
   if (v) cuts.push({ id: 'l' + i, assetId: v === 'none' ? '' : v, lineRef: { line: i }, start: null, end: null, fit: 'auto', enter: 'auto', hold: 'auto', exit: 'auto', opacity: 1 });
   back.cuts = cuts;
   J.uiApi.replan(); J.uiApi.flushSave();
+}"""
+
+JS_ADD_TIMED = r"""(o) => {
+  const S = J.ui, back = S.project.media.tracks.back;
+  const used = new Set(back.cuts.map(c => c.id));
+  let k = 1; while (used.has('t' + k)) k++;
+  const c = { id: 't' + k, assetId: o.assetId, lineRef: null, start: o.start, end: o.end, fit: o.fit || 'auto', enter: 'auto', hold: 'auto', exit: 'auto', opacity: 1 };
+  if (o.clipStart != null) c.video = { start: o.clipStart };
+  back.cuts.push(c);
+  S.project.media = J.media.normalize(S.project.media);     // the same checks as a project file
+  J.uiApi.replan(); J.uiApi.flushSave();
+  return c.id;
 }"""
 
 JS_SET_LOOK = r"""(o) => {
@@ -213,7 +229,11 @@ JS_EXPORT = r"""async (o) => {
   const onProgress = (f, msg) => { const n = performance.now(); if (n - last > 1500 || f >= 1) { last = n; console.log('[jz-progress] ' + f.toFixed(4) + ' ' + msg); } };
   const r = await J.exportMP4({ plan: S.plan, project: P, audio: P.includeAudio !== false ? S.audio : null, quality: o.quality || P.quality || 'high', onProgress, range });
   await J.saveFile(o.name, r.blob);
-  return { codec: r.codec, audio: r.audio, audioWanted: r.audioWanted, width: r.width, height: r.height, size: r.size, duration: J.exportSpan(S.plan, range).dur };
+  const span = J.exportSpan(S.plan, range), fps = S.plan.fps, frames = Math.max(1, Math.round(span.dur * fps));
+  const audioDur = r.audio && S.audio ? Math.min(span.dur, S.audio.buffer.duration - span.t0) : null;
+  // the planned length, and what was written: whole video frames (the last partial frame is not drawn) and the sound
+  return { codec: r.codec, audio: r.audio, audioWanted: r.audioWanted, width: r.width, height: r.height, size: r.size, duration: span.dur,
+    fps, frames, videoDuration: frames / fps, audioDuration: audioDur };
 }"""
 
 
@@ -400,6 +420,27 @@ class Jizura:
         await self._ev('(id) => J.mediaUI.remove(id)', await self._asset_id(ref))
         await self.page.wait_for_timeout(200)
         return await self._ev('() => J.ui.project.media.assets.map(a => a.name)')
+
+    async def add_timed_media(self, media, start=0, end=None, clip_start=None, fit=None):
+        """a picture or clip at a time of the song (seconds), e.g. one clip under the whole song: start=0, end=None (= until the next
+        timed one, or the end). It covers the automatic per-line pictures there; a picture chosen for a line still shows over it, and a
+        clip keeps running on its own clock (it never restarts at a lyric line). media='none' leaves that time without a picture.
+        clip_start: where in the clip to begin (seconds). Returns the id (for remove_timed_media)"""
+        start = float(start)
+        if start < 0 or (end is not None and float(end) <= start): raise JizuraError(f'start / end の範囲が正しくありません: {start} / {end}')
+        if fit is not None and fit not in MEDIA_FIT: raise JizuraError(f'fit は {MEDIA_FIT} のどれか: {fit}')
+        aid = '' if media == 'none' else await self._asset_id(media)
+        cid = await self._ev(JS_ADD_TIMED, {'assetId': aid, 'start': start, 'end': None if end is None else float(end),
+                                             'clipStart': None if clip_start is None else float(clip_start), 'fit': fit})
+        p = await self.get_plan()
+        return {'id': cid, 'timed': p['timed'], 'cuts': len(p['cuts'])}
+
+    async def remove_timed_media(self, id='all'):
+        """remove one picture placed at a time (its id from get_plan's 'timed'), or all of them"""
+        n = await self._ev('''(id) => { const back = J.ui.project.media.tracks.back, before = back.cuts.length;
+          back.cuts = back.cuts.filter(c => c.lineRef || (id !== 'all' && c.id !== id)); J.uiApi.replan(); J.uiApi.flushSave(); return before - back.cuts.length; }''', str(id))
+        if not n: raise JizuraError(f'時刻で置いた画像・動画が見つかりません: {id}')
+        return {'removed': n, 'timed': (await self.get_plan())['timed']}
 
     async def set_line_media(self, line, media):
         """the picture behind lyric line `line` (1 = first): a name / id / number, 'none' (画像なし) or 'auto' (in turn)"""
