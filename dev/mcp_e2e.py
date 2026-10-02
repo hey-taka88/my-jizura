@@ -9,7 +9,8 @@ Makes a working folder with a generated song (WAV), Suno-style timed lyrics and 
   shows, it comes back after save → open · open_project names the pictures that are not loaded · set_output 9:16 ·
   set_line_style: a phrase starts at its own time, a big centred line / a line moved up / a short vertical line come back the same
   (get_line and the same preview image) after save → open, a locked line survives set_look · relink_media in a fresh project ·
-  the interlude title can be left out while the title stays.
+  the interlude title can be left out while the title stays · 制作の記録: run.json / calls.jsonl / previews / projects match what
+  happened (inputs and outputs with their sha256, time in and between tools, notes, refused calls).
 Exit code 0 = all checks passed. Needs: pip install mcp (1.x or 2.x)."""
 import asyncio, base64, datetime, inspect, io, json, math, os, struct, sys, tempfile, wave
 from PIL import Image, ImageDraw
@@ -21,7 +22,8 @@ BROWSER = sys.argv[sys.argv.index('--browser') + 1] if '--browser' in sys.argv e
 KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
          'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4',
-         'add_timed_media', 'remove_timed_media', 'get_line', 'set_line_style', 'set_text_options', 'relink_media'}
+         'add_timed_media', 'remove_timed_media', 'get_line', 'set_line_style', 'set_text_options', 'relink_media',
+         'log_note', 'run_info', 'start_run'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -215,6 +217,36 @@ async def main():
                        f"relink_media finds them by content, a renamed file too {r9}")
             r = await call('set_output', {'aspect': '9:16'})
             ok(r['aspect'] == '9:16' and r['size'] == [1080, 1920], f'set_output: {r}')
+            print('制作の記録')
+            n = await call('log_note', {'text': '12 秒で文字が上で切れた', 'kind': 'issue', 'time': 12, 'line': 3})
+            ok(n['kind'] == 'issue' and n['time'] == 12, f'log_note ({n})')
+            info = await call('run_info')
+            rd = os.path.join(d, info['dir'])
+            run = json.load(open(os.path.join(rd, 'run.json'), encoding='utf-8'))
+            calls = [json.loads(l) for l in open(os.path.join(rd, 'calls.jsonl'), encoding='utf-8')]
+            ok(info['dir'].startswith('jizura_runs' + os.sep) and len(calls) == run['timing']['calls'] >= 40, f"the record is in the working folder ({info['dir']}, {len(calls)} calls)")
+            ok(run['env']['app']['version'] and run['env']['app']['pageSha256'] and run['env']['browser']['browser'], f"environment: app {run['env']['app']['version']} {str(run['env']['app']['git'].get('commit'))[:8]}, {run['env']['browser']['browser']}")
+            t = run['timing']; ok(t['toolMs'] > 0 and t['betweenToolsMs'] > 0 and t['wallMs'] >= t['toolMs'] and set(t['byPhase']) >= {'setup', 'edit', 'check', 'output'},
+                                  f"time: {t['toolMs']} ms in tools, {t['betweenToolsMs']} ms between, phases {sorted(t['byPhase'])}")
+            import hashlib as _h
+            sha = lambda f: _h.sha256(open(f, 'rb').read()).hexdigest()
+            ins = {i['path']: i['sha256'] for i in run['inputs']}
+            ok(ins.get('suno.json') == sha(os.path.join(d, 'suno.json')) and ins.get('song.wav') == sha(os.path.join(d, 'song.wav')) and os.path.join('pics', '01.png') in ins,
+               f"inputs with their content hash ({len(ins)})")
+            outs = run['outputs']
+            mp4 = [o for o in outs if o['tool'] == 'export_mp4']
+            ok(len(mp4) == 2 and all(o['sha256'] == sha(os.path.join(d, o['path'])) for o in mp4) and mp4[0]['facts']['frames'] == 48 and mp4[1]['collision'] == 'renamed',
+               f"exports with hash, frames and how the name was chosen ({[o['path'] for o in mp4]})")
+            ok(any(o['tool'] == 'save_project' and o['collision'] == 'replaced' for o in outs), 'saves are listed (also the replaced one)')
+            pv = [c for c in calls if c['tool'] == 'preview']
+            files = [f for c in pv for f in c.get('previews', [])]
+            ok(pv and files and all(os.path.isfile(os.path.join(d, f)) for f in files) and len(files) == sum(len([x for x in c['result'] if isinstance(x, str)]) for c in pv),
+               f'every preview image is kept ({len(files)})')
+            ok(all(c.get('project') for c in pv) and all(os.path.isfile(os.path.join(d, P['file'])) for P in run['projects'] if P['file']) and any(P['file'] for P in run['projects']),
+               f"previews and exports name the project state they came from ({len(run['projects'])} states)")
+            ok(any(e['tool'] == 'set_line_style' for e in run['errors']) and run['notes'][-1]['text'] == '12 秒で文字が上で切れた', 'refused calls and notes are in it')
+            r = await call('start_run', {'title': '次の曲'})
+            ok(r['dir'] != info['dir'] and '次の曲' in r['dir'] and os.path.isfile(os.path.join(d, r['dir'], 'run.json')), f"start_run opens a new record ({r['dir']})")
             st = await call('status')
             ok(not st['pageErrors'], f"no page errors {st['pageErrors']}")
     tmp.cleanup()

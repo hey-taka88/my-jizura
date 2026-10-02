@@ -62,7 +62,7 @@ node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触った
 - **プロジェクト JSON は信用しない**：`mergeProject()` → `J.media.normalize()` で全フィールドを検証・clamp。id は `/^[\w-]{1,32}$/`、色は `#rrggbb`、文字列は長さ制限。素材の実体（バイト列）は JSON に入れない（IndexedDB `files` の `media:<id>`）。
 - **既存の歌詞側の挙動を変えない**：`plan.cuts` の中身・順序・シード消費を変えない（既存プロジェクトの見た目が変わる）。抽選を足すときは別の `rng` ストリーム（`J.rng(J.h(seed, 'media'))`）。
 - **例外を投げない**：`bb === null`、素材未読み込み、動画の seek 失敗をガードして黒／スキップで続行。`console.warn` に残す。
-- **エージェント用ツール**（`tools/jizura_*.py`）はパネルと同じ関数を呼ぶだけ（アプリの処理を Python で作り直さない）。`J.ui` / `J.uiApi` / `J.mediaUI` の形や入力欄の id を変えたら、`tools/jizura_driver.py` と `dev/mcp_e2e.py` も直す。MCP のツールは作業フォルダの外を読み書きしない・上書きしない
+- **エージェント用ツール**（`tools/jizura_*.py`）はパネルと同じ関数を呼ぶだけ（アプリの処理を Python で作り直さない）。`J.ui` / `J.uiApi` / `J.mediaUI` の形や入力欄の id を変えたら、`tools/jizura_driver.py` と `dev/mcp_e2e.py` も直す。MCP のツールは作業フォルダの外を読み書きしない・上書きしない。新しい MCP ツールには `@recorded` を付ける（制作の記録 `tools/jizura_runlog.py` に残すため。読むファイルは `inside()`、書いたファイルは `RUN.output()` を通す）
 - **ゴーストパス**：`env.pass !== 'main'` のときにメディアを描かない。
 - **透過 PNG の前景／後景分割**（`opt.layer`）と **keyBg（グリーン／ブラックバック）** の両方で正しく動くこと（keyBg 中はメディアを描かない）。
 - **UI 文字列は日本語**（本家に合わせる）。英語版は `app/english.py` の対応表に足す。他言語版が `tools/check_i18n.py` で警告しても、自分用なので日本語のままで可。
