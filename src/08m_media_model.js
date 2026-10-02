@@ -11,9 +11,16 @@ M.ID = /^[\w-]{1,32}$/;
 M.TRACKS = ['back', 'front'];
 M.TYPES = ['image', 'video'];
 M.FIT = ['cover', 'contain'];
-M.ENTER = ['auto', 'cut', 'fade'];
-M.HOLD = ['auto', 'still', 'kenburns'];
-M.EXIT = ['auto', 'cut', 'fade'];
+// 登場・退場 (when no picture touches this one), 動き, 加工 (Phase 3)
+M.ENTER = ['auto', 'cut', 'fade', 'slide', 'zoom', 'wipe'];
+M.HOLD = ['auto', 'still', 'kenburns', 'pan', 'push', 'drift', 'beatPulse'];
+M.EXIT = ['auto', 'cut', 'fade', 'slide', 'zoom', 'wipe'];
+M.TREAT = ['none', 'mono', 'sepia', 'blur', 'duotone', 'match'];
+// つなぎ (one picture to the next): a cross-fade, a hard cut, a mix of the lyric transitions below (seeded), or one of them
+M.JOIN = ['fade', 'cut', 'mix'];
+M.TRANS_KEYS = ['wipe', 'diagonalWipe', 'clockWipe', 'irisOpen', 'pushSlide', 'cover', 'uncover', 'zoomThrough', 'doorsOpen', 'blinds',
+  'whipPan', 'inkBlob', 'flashCross', 'pixelate', 'sliceShift', 'blockDissolve'];
+M.SCRIM = ['off', 'auto', 'always'];        // 文字の下の暗幕: auto = only where the picture makes the lyrics hard to read
 M.BLEND = ['normal', 'multiply', 'screen', 'overlay'];
 M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.BG) where a background image shows
 M.AUTO = ['off', 'perLine'];
@@ -34,10 +41,11 @@ M.defaults = () => ({
     front: { cuts: [], opacity: 1, blend: 'normal', dim: 0 },
   },
   autoFill: {
-    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns', video: { extend: 'loop', rate: 1, beats: 4 } },
-    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', video: { extend: 'loop', rate: 1, beats: 4 } },
+    back: { mode: 'perLine', order: 'sequential', seed: 1, fit: 'cover', hold: 'kenburns', enter: 'fade', exit: 'fade', trans: 'fade', treat: 'none', video: { extend: 'loop', rate: 1, beats: 4 } },
+    front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', enter: 'fade', exit: 'fade', trans: 'fade', treat: 'none', video: { extend: 'loop', rate: 1, beats: 4 } },
   },
   lyricBg: 'off',
+  scrim: { mode: 'auto', amount: 0.55 },
 });
 
 const num = (v, lo, hi, d) => { const n = +v; return Number.isFinite(n) ? J.clamp(n, lo, hi) : d; };
@@ -64,6 +72,7 @@ function cut(c, i) {
     fit: pick(c.fit, M.FIT.concat(['auto']), 'auto'),
     enter: pick(c.enter, M.ENTER, 'auto'), hold: pick(c.hold, M.HOLD, 'auto'), exit: pick(c.exit, M.EXIT, 'auto'),
     opacity: num(c.opacity, 0, 1, 1),
+    treat: pick(c.treat, ['auto'].concat(M.TREAT), 'auto'), trans: join(c.trans, 'auto'),
   };
   if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
   if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
@@ -80,6 +89,8 @@ function video(v, d) {
   if (v.beats != null || d) o.beats = [1, 2, 4, 8, 16].includes(+v.beats) ? +v.beats : (d ? d.beats : 4);
   return o;
 }
+/* つなぎ: 'auto' (cuts only), fade / cut / mix, or a transition key (checked against J.TRANS when the plan is made) */
+function join(v, d) { return v === 'auto' || M.JOIN.includes(v) || M.TRANS_KEYS.includes(v) ? v : d; }
 function track(t, d) {
   t = isObj(t) ? t : {};
   return {
@@ -89,8 +100,10 @@ function track(t, d) {
 }
 function auto(a, d) {
   a = isObj(a) ? a : {};
+  const no = l => l.filter(k => k !== 'auto');
   return { mode: pick(a.mode, M.AUTO, d.mode), order: pick(a.order, M.ORDER, d.order), seed: int(a.seed, 0, 2 ** 31 - 1, d.seed),
-    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, M.HOLD.filter(k => k !== 'auto'), d.hold), video: video(a.video, d.video) };
+    fit: pick(a.fit, M.FIT, d.fit), hold: pick(a.hold, no(M.HOLD), d.hold), enter: pick(a.enter, no(M.ENTER), d.enter), exit: pick(a.exit, no(M.EXIT), d.exit),
+    trans: join(a.trans === 'auto' ? null : a.trans, d.trans), treat: pick(a.treat, M.TREAT, d.treat), video: video(a.video, d.video) };
 }
 
 /* untrusted input → a complete, valid project.media */
@@ -100,7 +113,9 @@ M.normalize = m => {
   const seen = new Set(), assets = [];
   for (const a of (Array.isArray(m.assets) ? m.assets : []).slice(0, M.MAX_ASSETS)) { const o = asset(a); if (o && !seen.has(o.id)) { seen.add(o.id); assets.push(o); } }
   const tr = isObj(m.tracks) ? m.tracks : {}, af = isObj(m.autoFill) ? m.autoFill : {};
-  const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg) };
+  const sc = isObj(m.scrim) ? m.scrim : {};
+  const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg),
+    scrim: { mode: pick(sc.mode, M.SCRIM, d.scrim.mode), amount: num(sc.amount, 0, 0.9, d.scrim.amount) } };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
   // a cut may only point at an asset of this project ('' = deliberately none); cuts of a picture that is gone are dropped
   for (const k of M.TRACKS) out.tracks[k].cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));

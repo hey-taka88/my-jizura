@@ -27,7 +27,10 @@ RES = [720, 1080, 1440, 2160]
 FPS = [24, 30, 60]
 QUALITY = ['standard', 'high', 'max']
 MEDIA_ORDER = ['sequential', 'random']
-MEDIA_HOLD = ['kenburns', 'still']
+MEDIA_HOLD = ['kenburns', 'pan', 'push', 'drift', 'beatPulse', 'still']
+MEDIA_ENTER = ['fade', 'slide', 'zoom', 'wipe', 'cut']
+MEDIA_TREAT = ['none', 'match', 'mono', 'sepia', 'duotone', 'blur']
+MEDIA_SCRIM = ['auto', 'always', 'off']
 MEDIA_FIT = ['cover', 'contain']
 VIDEO_EXTEND = ['loop', 'pingpong', 'hold', 'beat']
 VIDEO_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2]
@@ -86,6 +89,7 @@ JS_STATUS = r"""async () => {
 
 JS_OPTIONS = r"""() => ({
   themes: Object.fromEntries(J.THEME_ORDER.map(k => [k, J.THEMES[k].name])),
+  transitions: Object.fromEntries(J.media.TRANS_KEYS.filter(k => J.TRANS[k]).map(k => [k, J.TRANS[k].name])),
   styles: Object.fromEntries(J.STYLE_ORDER.map(k => [k, J.STYLES[k].name])),
   moods: Object.fromEntries(Object.keys(J.MOODS).map(k => [k, J.MOODS[k].name])),
 })"""
@@ -94,7 +98,7 @@ JS_OPTIONS = r"""() => ({
 JS_PLAN = r"""() => {
   const S = J.ui, P = S.project, plan = S.plan, m = P.media, mp = plan.media;
   const name = id => { const a = J.media.assetById(P, id); return a ? a.name : null; };
-  const r2 = x => Math.round(x * 100) / 100;
+  const r2 = x => Math.round(x * 100) / 100 || 0;      // (never -0)
   const own = new Map(m.tracks.back.cuts.filter(c => c.lineRef).map(c => [c.lineRef.line, c.assetId]));
   return {
     title: P.title, artist: P.artist, aspect: P.aspect, res: P.res, fps: P.fps, quality: P.quality || 'high', includeAudio: P.includeAudio !== false,
@@ -108,8 +112,13 @@ JS_PLAN = r"""() => {
     }),
     media: m.assets.map((a, i) => ({ n: i + 1, name: a.name, id: a.id, type: a.type, w: a.w, h: a.h, duration: a.duration, loaded: J.mediaAssets.has(a.id) })),
     mediaOptions: { auto: m.autoFill.back.mode === 'perLine', order: m.autoFill.back.order, hold: m.autoFill.back.hold, fit: m.autoFill.back.fit,
-      dim: m.tracks.back.dim, lyricBg: m.lyricBg, shuffle: m.autoFill.back.seed, video: m.autoFill.back.video },
-    cuts: mp ? mp.back.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end) })) : [],
+      dim: m.tracks.back.dim, lyricBg: m.lyricBg, shuffle: m.autoFill.back.seed, video: m.autoFill.back.video,
+      trans: m.autoFill.back.trans, enter: m.autoFill.back.enter, exit: m.autoFill.back.exit, treat: m.autoFill.back.treat, scrim: m.scrim.mode, scrimAmount: m.scrim.amount },
+    cuts: mp ? mp.back.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end), timed: !!c.timed })) : [],
+    // pictures placed at a time of the song (add_timed_media): over the automatic ones, under the ones chosen for a line
+    timed: m.tracks.back.cuts.filter(c => !c.lineRef).map(c => ({ id: c.id, media: c.assetId ? name(c.assetId) : 'none', start: r2(c.start), end: c.end == null ? null : r2(c.end),
+      clipStart: c.video && c.video.start != null ? c.video.start : null })),
+    missing: m.assets.filter(a => !J.mediaAssets.has(a.id)).map(a => a.name),   // in the project but not loaded: add_media them again
   };
 }"""
 
@@ -146,6 +155,18 @@ JS_SET_LINE = r"""([i, v]) => {
   J.uiApi.replan(); J.uiApi.flushSave();
 }"""
 
+JS_ADD_TIMED = r"""(o) => {
+  const S = J.ui, back = S.project.media.tracks.back;
+  const used = new Set(back.cuts.map(c => c.id));
+  let k = 1; while (used.has('t' + k)) k++;
+  const c = { id: 't' + k, assetId: o.assetId, lineRef: null, start: o.start, end: o.end, fit: o.fit || 'auto', enter: 'auto', hold: 'auto', exit: 'auto', opacity: 1 };
+  if (o.clipStart != null) c.video = { start: o.clipStart };
+  back.cuts.push(c);
+  S.project.media = J.media.normalize(S.project.media);     // the same checks as a project file
+  J.uiApi.replan(); J.uiApi.flushSave();
+  return c.id;
+}"""
+
 JS_SET_LOOK = r"""(o) => {
   const S = J.ui, P = S.project;
   if ('theme' in o) P.themeId = o.theme && J.THEMES[o.theme] ? o.theme : null;
@@ -165,7 +186,8 @@ JS_SET_LOOK = r"""(o) => {
 JS_SET_MEDIA = r"""(o) => {
   const S = J.ui, m = S.project.media, A = m.autoFill.back, T = m.tracks.back;
   if (o.auto != null) A.mode = o.auto ? 'perLine' : 'off';
-  for (const k of ['order', 'hold', 'fit']) if (o[k] != null) A[k] = o[k];
+  for (const k of ['order', 'hold', 'fit', 'trans', 'enter', 'exit', 'treat']) if (o[k] != null) A[k] = o[k];
+  if (o.scrim != null || o.scrimAmount != null) m.scrim = Object.assign({}, m.scrim, o.scrim != null ? { mode: o.scrim } : {}, o.scrimAmount != null ? { amount: o.scrimAmount } : {});
   if (o.shuffle != null) A.seed = o.shuffle;
   if (o.dim != null) T.dim = o.dim;
   if (o.lyricBg != null) m.lyricBg = o.lyricBg ? 'over' : 'off';
@@ -207,7 +229,11 @@ JS_EXPORT = r"""async (o) => {
   const onProgress = (f, msg) => { const n = performance.now(); if (n - last > 1500 || f >= 1) { last = n; console.log('[jz-progress] ' + f.toFixed(4) + ' ' + msg); } };
   const r = await J.exportMP4({ plan: S.plan, project: P, audio: P.includeAudio !== false ? S.audio : null, quality: o.quality || P.quality || 'high', onProgress, range });
   await J.saveFile(o.name, r.blob);
-  return { codec: r.codec, audio: r.audio, audioWanted: r.audioWanted, width: r.width, height: r.height, size: r.size, duration: J.exportSpan(S.plan, range).dur };
+  const span = J.exportSpan(S.plan, range), fps = S.plan.fps, frames = Math.max(1, Math.round(span.dur * fps));
+  const audioDur = r.audio && S.audio ? Math.min(span.dur, S.audio.buffer.duration - span.t0) : null;
+  // the planned length, and what was written: whole video frames (the last partial frame is not drawn) and the sound
+  return { codec: r.codec, audio: r.audio, audioWanted: r.audioWanted, width: r.width, height: r.height, size: r.size, duration: span.dur,
+    fps, frames, videoDuration: frames / fps, audioDuration: audioDur };
 }"""
 
 
@@ -313,6 +339,7 @@ class Jizura:
         """the values the setters accept"""
         o = await self._ev(JS_OPTIONS)
         o.update(aspects=ASPECTS, res=RES, fps=FPS, quality=QUALITY, mediaOrder=MEDIA_ORDER, mediaHold=MEDIA_HOLD, mediaFit=MEDIA_FIT,
+                 mediaJoin=['fade', 'cut', 'mix'] + list(o['transitions']), mediaEnter=MEDIA_ENTER, mediaTreat=MEDIA_TREAT, mediaScrim=MEDIA_SCRIM,
                  videoExtend=VIDEO_EXTEND, videoRates=VIDEO_RATES, videoBeats=VIDEO_BEATS)
         return o
 
@@ -394,6 +421,27 @@ class Jizura:
         await self.page.wait_for_timeout(200)
         return await self._ev('() => J.ui.project.media.assets.map(a => a.name)')
 
+    async def add_timed_media(self, media, start=0, end=None, clip_start=None, fit=None):
+        """a picture or clip at a time of the song (seconds), e.g. one clip under the whole song: start=0, end=None (= until the next
+        timed one, or the end). It covers the automatic per-line pictures there; a picture chosen for a line still shows over it, and a
+        clip keeps running on its own clock (it never restarts at a lyric line). media='none' leaves that time without a picture.
+        clip_start: where in the clip to begin (seconds). Returns the id (for remove_timed_media)"""
+        start = float(start)
+        if start < 0 or (end is not None and float(end) <= start): raise JizuraError(f'start / end の範囲が正しくありません: {start} / {end}')
+        if fit is not None and fit not in MEDIA_FIT: raise JizuraError(f'fit は {MEDIA_FIT} のどれか: {fit}')
+        aid = '' if media == 'none' else await self._asset_id(media)
+        cid = await self._ev(JS_ADD_TIMED, {'assetId': aid, 'start': start, 'end': None if end is None else float(end),
+                                             'clipStart': None if clip_start is None else float(clip_start), 'fit': fit})
+        p = await self.get_plan()
+        return {'id': cid, 'timed': p['timed'], 'cuts': len(p['cuts'])}
+
+    async def remove_timed_media(self, id='all'):
+        """remove one picture placed at a time (its id from get_plan's 'timed'), or all of them"""
+        n = await self._ev('''(id) => { const back = J.ui.project.media.tracks.back, before = back.cuts.length;
+          back.cuts = back.cuts.filter(c => c.lineRef || (id !== 'all' && c.id !== id)); J.uiApi.replan(); J.uiApi.flushSave(); return before - back.cuts.length; }''', str(id))
+        if not n: raise JizuraError(f'時刻で置いた画像・動画が見つかりません: {id}')
+        return {'removed': n, 'timed': (await self.get_plan())['timed']}
+
     async def set_line_media(self, line, media):
         """the picture behind lyric line `line` (1 = first): a name / id / number, 'none' (画像なし) or 'auto' (in turn)"""
         n = await self._ev('() => J.ui.plan.lines.length')
@@ -415,18 +463,32 @@ class Jizura:
         arg.update(style=style, mood=mood, variation=None if variation is None else int(variation), seed=None if seed is None else int(seed))
         return await self._ev(JS_SET_LOOK, arg)
 
-    async def set_media_options(self, auto=None, order=None, hold=None, fit=None, dim=None, lyric_bg=None, shuffle=None, extend=None, rate=None, beats=None):
-        """how the pictures fill the song: auto (one per line in turn), order, hold (kenburns = slow zoom), fit, dim (0–0.9, a dark veil
-        so the lyrics stay readable), lyric_bg (also draw the lyrics' own background graphic), shuffle (a number: another random order),
-        and for clips: extend (when a clip is shorter than its line), rate, beats (extend='beat': restart every N beats)"""
+    async def set_media_options(self, auto=None, order=None, hold=None, fit=None, dim=None, lyric_bg=None, shuffle=None, extend=None, rate=None, beats=None,
+                                trans=None, enter=None, exit=None, treat=None, scrim=None, scrim_amount=None):
+        """how the pictures fill the song: auto (one per line in turn), order, hold (kenburns = slow zoom, pan, push, drift, beatPulse, still),
+        fit, dim (0–0.9, a dark veil so the lyrics stay readable), lyric_bg (also draw the lyrics' own background graphic), shuffle (a number:
+        another random order), trans (between two pictures: fade / cut / mix / a transition key), enter / exit (fade / slide / zoom / wipe / cut,
+        where no picture touches), treat (none / match / mono / sepia / duotone / blur), scrim (a plate behind the lyrics: auto / always / off)
+        and scrim_amount (0–0.9); for clips: extend (when a clip is shorter than its line), rate, beats (extend='beat': restart every N beats)"""
         chk = lambda v, ok, k: None if v is None or v in ok else (_ for _ in ()).throw(JizuraError(f'{k} は {ok} のどれか: {v}'))
         chk(order, MEDIA_ORDER, 'order'); chk(hold, MEDIA_HOLD, 'hold'); chk(fit, MEDIA_FIT, 'fit')
+        chk(trans, (await self.options())['mediaJoin'], 'trans'); chk(enter, MEDIA_ENTER, 'enter'); chk(exit, MEDIA_ENTER, 'exit')
+        chk(treat, MEDIA_TREAT, 'treat'); chk(scrim, MEDIA_SCRIM, 'scrim')
+        if scrim_amount is not None and not (0 <= float(scrim_amount) <= 0.9): raise JizuraError(f'scrim_amount は 0〜0.9: {scrim_amount}')
         chk(extend, VIDEO_EXTEND, 'extend'); chk(rate, VIDEO_RATES, 'rate'); chk(beats, VIDEO_BEATS, 'beats')
         if dim is not None and not (0 <= float(dim) <= 0.9): raise JizuraError(f'dim は 0〜0.9: {dim}')
         video = {k: v for k, v in (('extend', extend), ('rate', rate), ('beats', beats)) if v is not None}
         await self._ev(JS_SET_MEDIA, {'auto': auto, 'order': order, 'hold': hold, 'fit': fit, 'dim': None if dim is None else float(dim),
-                                      'lyricBg': lyric_bg, 'shuffle': None if shuffle is None else int(shuffle), 'video': video})
+                                      'lyricBg': lyric_bg, 'shuffle': None if shuffle is None else int(shuffle), 'video': video,
+                                      'trans': trans, 'enter': enter, 'exit': exit, 'treat': treat, 'scrim': scrim,
+                                      'scrimAmount': None if scrim_amount is None else float(scrim_amount)})
         return (await self.get_plan())['mediaOptions']
+
+    async def media_omakase(self):
+        """メディアのおまかせ (as the button): motion, transitions, in / out, treatment, darkness and order picked together at random"""
+        r = await self._ev('() => { const S = J.ui; const r = J.media.randomLook(S.project.media, !!(S.plan.beats && S.plan.beats.length)); J.uiApi.replan(); J.uiApi.flushSave(); return r; }')
+        o = (await self.get_plan())['mediaOptions']; o['summary'] = r
+        return o
 
     async def set_output(self, aspect=None, res=None, fps=None, quality=None, include_audio=None):
         if aspect is not None and aspect not in ASPECTS: raise JizuraError(f'aspect は {ASPECTS} のどれか: {aspect}')

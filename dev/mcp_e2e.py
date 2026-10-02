@@ -3,7 +3,10 @@ usage: python3 build.py && python3 dev/mcp_e2e.py [--browser chromium] [--keep D
 Makes a working folder with a generated song (WAV), Suno-style timed lyrics and three pictures, starts the server on it, then:
   lists the tools · list_files · new_project → set_lyrics → load_song → add_media · a path outside the folder is refused ·
   set_line_media 'none' · set_look (theme) · set_media_options · preview returns PNG images · export_mp4 twice (the second gets a
-  new name, nothing is overwritten) · save_project → open_project keeps the lines and the per-line choice · set_output 9:16.
+  new name, nothing is overwritten; the lengths are reported) · save_project → open_project keeps the lines and the per-line choice ·
+  saving under the same name twice: a new name (returned as `saved`), or replace=true for a file this server wrote; never a file
+  that was there before · add_timed_media: one picture under the whole song covers the automatic ones, a line's own choice still
+  shows, it comes back after save → open · open_project names the pictures that are not loaded · set_output 9:16.
 Exit code 0 = all checks passed. Needs: pip install mcp (1.x or 2.x)."""
 import asyncio, base64, datetime, inspect, io, json, math, os, struct, sys, tempfile, wave
 from PIL import Image, ImageDraw
@@ -14,7 +17,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BROWSER = sys.argv[sys.argv.index('--browser') + 1] if '--browser' in sys.argv else 'auto'
 KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
-         'set_line_media', 'set_look', 'set_media_options', 'set_output', 'get_plan', 'preview', 'export_mp4'}
+         'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4',
+         'add_timed_media', 'remove_timed_media'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -85,8 +89,13 @@ async def main():
             ok(r['line']['media'] is None and r['line']['choice'] == 'none', f'line 2 → no picture ({r})')
             r = await call('set_look', {'theme': 'ballad', 'variation': 2})
             ok(r['theme'] == 'ballad' and r['mood'] in ('calm', 'emotional'), f'look: {r}')
-            r = await call('set_media_options', {'dim': 0.5, 'hold': 'still'})
-            ok(r['dim'] == 0.5 and r['hold'] == 'still', f'media options: {r}')
+            r = await call('set_media_options', {'dim': 0.5, 'hold': 'still', 'trans': 'wipe', 'treat': 'mono', 'scrim': 'always'})
+            ok(r['dim'] == 0.5 and r['hold'] == 'still' and r['trans'] == 'wipe' and r['treat'] == 'mono' and r['scrim'] == 'always', f'media options: {r}')
+            err, msg = await call('set_media_options', {'trans': 'nope'}, expect_error=True)
+            ok(err and 'trans' in msg, 'an unknown transition is refused')
+            r = await call('media_omakase')
+            ok(bool(r.get('summary')), f"media_omakase: {r.get('summary')}")
+            await call('set_media_options', {'dim': 0.5, 'hold': 'still', 'trans': 'fade', 'treat': 'none', 'scrim': 'off', 'order': 'sequential'})
             p = await call('get_plan')
             ok([l['text'] for l in p['lines']] == LINES and p['lines'][0]['start'] == 2, 'plan: the lines and their times')
             ok([l['media'] for l in p['lines']] == ['01.png', None, '02.png', '03.png'], f"plan: pictures by line {[l['media'] for l in p['lines']]}")
@@ -104,12 +113,43 @@ async def main():
                 ok(r['path'] == os.path.join('out', 'clip.mp4' if k == 0 else 'clip-2.mp4') and r['size'] > 10000 and r['width'] == 1280,
                    f"export {k + 1}: {r['path']} {r['width']}×{r['height']} {r['codec']} audio {r['audio']} {r['size']} bytes")
             ok(all(os.path.getsize(os.path.join(d, 'out', n)) > 10000 for n in ('clip.mp4', 'clip-2.mp4')), 'both files are in the working folder')
+            ok(r['frames'] == 48 and abs(r['videoDuration'] - 2) < 1e-6 and r['collision'] == 'renamed' and r['saved'] == r['path'],
+               f"export reports frames {r['frames']}, video {r['videoDuration']} s, audio {r['audioDuration']} s, {r['collision']}")
             r = await call('save_project', {'path': 'mv.jizura.json'})
-            ok(r['saved'] == 'mv.jizura.json' and os.path.isfile(os.path.join(d, 'mv.jizura.json')), f'saved: {r}')
+            ok(r['saved'] == 'mv.jizura.json' and r['collision'] == 'new' and os.path.isfile(os.path.join(d, 'mv.jizura.json')), f'saved: {r}')
             await call('new_project', {})
             p2 = await call('open_project', {'path': 'mv.jizura.json'})
             ok([l['text'] for l in p2['lines']] == LINES and p2['lines'][1]['choice'] == 'none' and p2['look']['theme'] == 'ballad',
                'open_project brings back the lines, the per-line choice and the look')
+            print('save under the same name again')
+            await call('set_look', {'style': 'noir'})                          # change B
+            r = await call('save_project', {'path': 'mv.jizura.json'})
+            ok(r == {'requested': 'mv.jizura.json', 'saved': 'mv-2.jizura.json', 'collision': 'renamed'}, f'without replace: a new name, and it says so ({r})')
+            p3 = await call('open_project', {'path': r['saved']})
+            ok(p3['look']['style'] == 'noir', 'opening the returned path gives the latest content')
+            await call('set_look', {'style': 'paper'})
+            r = await call('save_project', {'path': 'mv.jizura.json', 'replace': True})
+            ok(r['saved'] == 'mv.jizura.json' and r['collision'] == 'replaced', f'replace=true writes over a file this server saved ({r})')
+            p3 = await call('open_project', {'path': 'mv.jizura.json'})
+            ok(p3['look']['style'] == 'paper', 'and opening it right after gives that content')
+            open(os.path.join(d, 'mine.jizura.json'), 'w').write('{}')
+            err, msg = await call('save_project', {'path': 'mine.jizura.json', 'replace': True}, expect_error=True)
+            ok(err and '置き換えません' in msg and open(os.path.join(d, 'mine.jizura.json')).read() == '{}', 'a file that was there before is never replaced')
+            print('a picture placed at a time')
+            r = await call('add_timed_media', {'media': '03.png', 'start': 0})
+            p4 = await call('get_plan')
+            ok(r['id'] and len(p4['timed']) == 1 and p4['timed'][0]['start'] == 0, f"add_timed_media: {r['id']} {p4['timed']}")
+            ok([l['media'] for l in p4['lines']] == ['03.png', None, '03.png', '03.png'], f"it covers the automatic pictures, line 2 keeps its 「なし」 {[l['media'] for l in p4['lines']]}")
+            ok([c['media'] for c in p4['cuts']] == ['03.png', '03.png'] and p4['cuts'][1]['timed'], f"two pieces around line 2 {p4['cuts']}")
+            r = await call('save_project', {'path': 'timed.jizura.json'})
+            await call('new_project', {})
+            p5 = await call('open_project', {'path': r['saved']})
+            ok(len(p5['timed']) == 1 and [l['media'] for l in p5['lines']] == ['03.png', None, '03.png', '03.png'] and not p5['missing'],
+               'it comes back after save → open')
+            r = await call('remove_timed_media', {'id': 'all'})
+            ok(r['removed'] == 1 and not r['timed'], 'remove_timed_media')
+            err, msg = await call('add_timed_media', {'media': 'nope.png'}, expect_error=True)
+            ok(err, 'an unknown picture is refused')
             r = await call('set_output', {'aspect': '9:16'})
             ok(r['aspect'] == '9:16' and r['size'] == [1080, 1920], f'set_output: {r}')
             st = await call('status')

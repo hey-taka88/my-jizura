@@ -55,6 +55,13 @@ async () => {
     const over = mediaP('cover', 'kenburns'); over.media.lyricBg = 'over';
     run('media.over', texts.map(() => ({ bg: 'meshBlobs' })), '16:9', 'noir', 4, over);
     run('media.key', texts.map(() => ({})), '16:9', 'noir', 4, mediaP('cover', 'kenburns', { keyBg: 'green' }));
+    // Phase 3: every picture transition, motion, treatment and entrance (line 2 has no picture, so pictures also come in by themselves), with the plate
+    const looks = J.media.TRANS_KEYS.filter(k => J.TRANS[k]).map(k => ({ trans: k }))
+      .concat(['pan', 'push', 'drift', 'beatPulse'].map(h => ({ hold: h })), ['mono', 'sepia', 'duotone', 'match', 'blur'].map(k => ({ treat: k })), ['slide', 'zoom', 'wipe'].map(k => ({ enter: k, exit: k })));
+    looks.forEach((o, i) => {
+      const p = mediaP('cover', o.hold || 'kenburns'); Object.assign(p.media.autoFill.back, o); p.media.scrim = { mode: i % 2 ? 'always' : 'auto', amount: 0.55 };
+      run('media.look.' + Object.values(o)[0], texts.map(() => ({})), aspects[i % 6], styles[i % styles.length], 6, p);
+    });
   }
   // random full plans with everything on
   for (let s = 0; s < 30; s++) run('random#' + s, texts.map(() => ({})), aspects[s % 6], styles[s % styles.length], 6);

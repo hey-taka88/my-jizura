@@ -5,6 +5,7 @@ carries its own clip time in its colour (red = whole second, green = frame in th
 them with 「追加」, puts a 10-second line over a clip and checks:
   preview frame = the clip time the song time maps to · exported MP4 frames for loop / ping-pong / hold / restart
   every bar (incl. the cross-fade at the loop seam) · at most 3 clips hold a decoder while scrubbing ·
+  a clip placed at a time of the song runs straight through lyric lines (also around a line with its own clip, and when exported) ·
   clips come back after a reload · PNG export runs with clips · a video file is accepted as the song.
 Exit code 0 = all checks passed."""
 import asyncio, base64, functools, http.server, os, sys, tempfile, threading
@@ -65,7 +66,8 @@ async def main():
                 pth = os.path.join(d, f'clip{k + 1}.mp4'); open(pth, 'wb').write(base64.b64decode(data)); paths.append(pth)
             # lyrics: three 10-second lines, no snapping; 120 BPM → a bar of 4 beats = 2 s
             await pg.evaluate("""() => { const P = J.ui.project; P.lyrics = '[00:00.00]いち\\n[00:10.00]に\\n[00:20.00]さん\\n[00:30.00]よん\\n[00:40.00]ご'; P.timing.snap = false; P.timing.bpm = 120; P.title = '';
-              P.media.tracks.back.dim = 0; document.getElementById('lyrics').value = P.lyrics; J.uiApi.replan(); }""")
+              P.media.tracks.back.dim = 0; P.media.scrim = { mode: 'off', amount: 0 };   // the clip colours are read back: no veil, no plate
+              document.getElementById('lyrics').value = P.lyrics; J.uiApi.replan(); }""")
             print('add clips')
             await pg.set_input_files('#mediaFiles', paths)
             await pg.wait_for_function('J.ui.project.media.assets.length === 4', timeout=60000)
@@ -117,6 +119,34 @@ async def main():
             res = await pg.evaluate("""async () => { const S = J.ui; const r = await J.exportMP4({ plan: S.plan, project: Object.assign({}, S.project, { res: 720, includeAudio: false }), audio: null, quality: 'normal', range: { t0: 3.5, t1: 4.5 } }); return URL.createObjectURL(r.blob); }""")
             m = await pg.evaluate(MEDIAN, [res, 0.38])                # song 3.88 s: end of the clip (3.88) with the start (0.18) fading in at 60 %
             ok(80 < m[0] < 175, f'the loop seam is a cross-fade, not a jump (red {m[0]} between the end and the start of the clip)')
+            print('a clip placed at a time (under the whole song, on the song clock)')
+            await pg.evaluate("""() => { const S = J.ui, m = S.project.media, ids = m.assets.map(a => a.id);
+              m.autoFill.back.video = { extend: 'loop', rate: 1, beats: 4 };
+              m.tracks.back.cuts = [{ id: 't1', assetId: ids[0], lineRef: null, start: 0, end: null }, { id: 'l2', assetId: ids[2], lineRef: { line: 2 } }];
+              S.project.media = J.media.normalize(m); J.uiApi.replan(); }""")
+            cuts = await pg.evaluate("() => { const id0 = J.ui.project.media.assets[0].id; return J.ui.plan.media.back.cuts.map(c => [c.assetId === id0 ? 'bg' : 'line', +c.start.toFixed(2), c.anchor]); }")
+            ok([c[0] for c in cuts] == ['bg', 'line', 'bg'] and [c[1] for c in cuts] == [0, 20, 30] and cuts[2][2] == 0,
+               f'it covers the automatic per-line clips, a clip chosen for line 3 still shows, and it resumes on its own clock: {cuts}')
+            VT = """(ts) => ts.map(t => { const P = J.ui.plan, c = J.media.cutAt(P, t, 'back'); return J.media.videoTimes(P, c, t).main; })"""
+            a_, b_ = await pg.evaluate(VT, [9.95, 10.05])
+            ok(abs((b_ - a_) - 0.1) < 0.02, f'no restart at the lyric line at 10 s (clip time {a_:.2f} → {b_:.2f})')
+            same = await pg.evaluate("""() => { const P = J.ui.plan, c0 = P.media.back.cuts[0], c2 = P.media.back.cuts[2];
+              return [J.media.videoTimes(P, c2, 30.05).main, J.media.videoTimes(P, c0, 30.05).main]; }""")
+            ok(abs(same[0] - same[1]) < 1e-6, f'after line 3 the clip is where it would have been without it ({same[0]:.2f})')
+            res = await pg.evaluate("""async () => { const S = J.ui; const r = await J.exportMP4({ plan: S.plan, project: Object.assign({}, S.project, { res: 720, includeAudio: false }), audio: null, quality: 'normal', range: { t0: 9.4, t1: 10.6 } }); return URL.createObjectURL(r.blob); }""")
+            bad = []
+            for off in [0.2, 0.55, 0.65, 1.0]:
+                exp = (await pg.evaluate(VT, [9.4 + off]))[0]
+                got = clip_time(await pg.evaluate(MEDIAN, [res, off + 0.5 / 30]))
+                if abs(got - exp) > 0.1: bad.append((round(9.4 + off, 2), round(exp, 2), round(got, 2)))
+            ok(not bad, f'the exported frames run straight through the lyric line {bad}')
+            for t in [12.3, 31.7]:
+                await pg.evaluate(f"() => J.uiApi.seek({t})")
+                await pg.wait_for_function(f"() => {{ const c = J.media.cutAt(J.ui.plan, {t}, 'back'), a = J.mediaAssets.get(c.assetId), vt = J.media.videoTimes(J.ui.plan, c, {t}); return a.el && !a.el.seeking && a.el.readyState >= 2 && Math.abs(a.el.currentTime - vt.main) < 0.03; }}", timeout=15000)
+                await pg.wait_for_timeout(120)
+                exp = (await pg.evaluate(VT, [t]))[0]; got = clip_time(await pg.evaluate(MEDIAN, ['render', t]))
+                ok(abs(got - exp) <= 0.07, f'a seek to {t}s shows the same clip time as the export would ({got:.2f} / {exp:.2f})')
+            await pg.evaluate("() => { const m = J.ui.project.media; m.tracks.back.cuts = []; J.uiApi.replan(); }")
             print('PNG export with clips')
             n = await pg.evaluate("""async () => { const S = J.ui; const r = await J.exportPNGZip({ plan: S.plan, project: Object.assign({}, S.project, { res: 720 }), range: { t0: 10.5, t1: 11.0 } }); return r && (r.size || r.byteLength || (r.blob && r.blob.size)) || 0; }""")
             ok(bool(n), f'PNG export runs with clips ({n})')
