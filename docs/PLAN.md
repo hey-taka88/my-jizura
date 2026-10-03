@@ -283,7 +283,7 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 ### Phase 1.5 — 歌詞タイミングの取り込み（Phase 1 と並行可・Sonnet・小）
 
 **状態：完了（2026-10-01）。** `src/11y_lyrics_import.js` が SRT・VTT・JSON（Whisper の segments、Suno の aligned_words、WhisperX などの単語リスト、`[{ start|time, text }]`）と拡張 LRC を LRC に変換し、本家の「LRC を読み込む」（元に戻す付き）に渡す。本家ファイルの変更は `12_ui.js` 1 行。確認は `python3 dev/lyrics_import_e2e.py`。
-計画との違い：語ごとの時刻は保存しない（使う機能がまだ無いので。B4 を作るときに足す）。`[Verse]` `[Chorus]` などの見出しは空行（＝新しいまとまり）に、JIZURA が読めない間奏タグ（`[Instrumental Break]` など）は `[間奏]` にする。単語の時刻から行を作るときは、単語の中の改行・0.9 秒以上の間・文末＋0.3 秒の間で区切る。
+計画との違い：語ごとの時刻は最初は保存しなかった（2026-10-03 に「語の時刻」で保存するようにした。下の実制作フィードバック 2 回目）。`[Verse]` `[Chorus]` などの見出しは空行（＝新しいまとまり）に、JIZURA が読めない間奏タグ（`[Instrumental Break]` など）は `[間奏]` にする。単語の時刻から行を作るときは、単語の中の改行・0.9 秒以上の間・文末＋0.3 秒の間で区切る。
 
 - [x] LRC 読み込み（本家 v0.10）を拡張し、SRT / VTT / Whisper の JSON（`segments[].words[]` の word timestamps）を読めるようにする。Suno のタイムスタンプ付き歌詞（LRC または JSON）も対象
 - 受け入れ：Whisper の JSON を落とすと、タップ同期なしで行が合う。既存の LRC 読み込みの挙動は変わらない
@@ -365,6 +365,18 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 - [x] P1 素材の再リンク：`relink_media`（CLI `--relink`）。素材の id は中身の SHA-256 の先頭 12 桁なので、名前が変わっても見つかる。素材込みの書き出し（`.jizura.zip`）は Phase 4
 - [x] P1 間奏でタイトルを出すかどうか：`set_text_options(interlude_title=false)`（CLI `--no-interlude-title`）。`project.media.text.interludeTitle`。本家のファイルは変えず、計画のあとで間奏のカットの曲名だけを消す。Web の画面にはまだ無い
 - [x] P2 制作の記録（run manifest）：MCP サーバーが作業フォルダの `jizura_runs/<日時>_<名前>/` に `report.md`（日本語）・`run.json`・`calls.jsonl`・`previews/`・`projects/` を残す（`tools/jizura_runlog.py`）。環境（版・commit・ページの sha256・ブラウザ）、時間（ツールの中／ツールとツールのあいだ、段階ごと）、読んだ・書いたファイルの sha256、プレビュー・書き出しに使ったプロジェクトの状態、`log_note` のメモ（近いプレビュー画像つき）、断った呼び出し。CLI にはまだ無い
+
+### 実制作からのフィードバック 2 回目（2026-10-03、Codex が MCP で 39 行の MV を A〜D の比較試写から改訂）
+
+文字を小さな一行字幕に寄せず、JIZURA の標準の動き（分割・拡大・回転・反復・残像）を活かす方向。ランダムは候補を作る入口で、採用した区間は固定して、色・読みやすさ・語の時刻だけを局所的に直したい、という報告から。
+
+- [x] **語の時刻**：単語ごとの時刻（Suno の `aligned_words`、WhisperX などの単語リスト、拡張 LRC の `<mm:ss.xx>`）を `project.media.text.words` に `{text, start, w:[[時刻, 行の中の文字位置]], p}` として残し（素材と同じく検証・上限つき）、計画のあとで、行の中の 2 つ目以降のカットの開始を、その句の最初の文字を歌う時刻へ動かす（`src/08m_media_text.js` の `M.alignWords`）。文字位置は空白・`/`・`*`・`|` の注釈・末尾の `!` を数えない（本家が句に分ける前の文字）。手で決めた句の開始時刻（`cutTime`）が優先、行をもう一度出すカット（recap）は動かさない、句が行の文字の並びと合わないときと、歌詞を手で書き換えて語の文字と合わなくなった行は今まで通り文字数で配分。カットの数・順序・抽選は変わらない（時刻だけ）。「LRC を読み込む」でも MCP の `set_lyrics` でも同じ。`get_line` / `get_plan` に `words`・`confidence`（行でいちばん低い合わせの確かさ）・`cutTimes`。確認は `dev/text_style_e2e.py` の「語の時刻」
+- [ ] Codex 側で足した `get_motion_plan`（読み取り専用）・`lock_motion_palette`（範囲の行の動きとカット境界を固定）をこのリポジトリへ移す（Codex の `jizura_mcp.py` 待ち）
+- [ ] 範囲（Pre-Chorus・Bridge などのまとまり）単位の保持・動きの強さ
+- [ ] 文字色以外の局所的な配色（いまの `colors` / `chroma` はプロジェクト全体）
+- [ ] 確かさの低い行を一覧で出す（`timing_master.json` の末尾 2 行のような仮時刻）
+- 読みにくいカットだけ配置を替える：`set_line_style(行, cut=…, layout=…)` で今もできる
+- 採用案の保存：`save_project` のプロジェクトに `cutTime`・固定・語の時刻が入る。制作の記録の `projects/` にもプレビュー・書き出しのたびに残る
 
 ### Phase 4 — 統合・仕上げ
 

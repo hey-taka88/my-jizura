@@ -2,9 +2,11 @@
 usage: python3 build.py && python3 dev/text_style_e2e.py [--browser chromium]
   the interlude title switch also clears the interlude the planner puts into a long gap between lines · a coloured line keeps its own
   colour scheme (background, accents) in a style with several schemes, also after it is locked · one cut takes its own background
-  and decoration · single=False and 'auto' clear what they set · x / y / size move the lyric (the 'place' camera) · same plan twice.
+  and decoration · single=False and 'auto' clear what they set · x / y / size move the lyric (the 'place' camera) · same plan twice ·
+  語の時刻: word times from Suno words, enhanced LRC and the 「LRC を読み込む」 button make the cuts of a line change when their word is
+  sung (a recap cut and cut times set by hand stay), the lowest alignment confidence is reported, save → open keeps them.
 Exit code 0 = all checks passed."""
-import asyncio, os, sys
+import asyncio, json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 from jizura_driver import Jizura
 
@@ -66,6 +68,43 @@ async def main():
         same = await ev("() => { const a = JSON.stringify(J.plan(J.ui.project, null).cuts.map(c => [c.cam, c.camP, c.scheme])); const b = JSON.stringify(J.plan(J.ui.project, null).cuts.map(c => [c.cam, c.camP, c.scheme])); return a === b; }")
         ok(same, 'the same project gives the same plan')
         ok(not await ev("() => J.CAMERA_ORDER.includes('place')"), 'the place camera is never picked at random')
+        print('語の時刻')
+        words = [{'word': 'この、', 'start_s': 5.0, 'end_s': 5.3, 'p_align': 0.9}, {'word': 'やけに', 'start_s': 5.4, 'end_s': 6.5, 'p_align': 0.8}, {'word': '重たい', 'start_s': 6.7, 'end_s': 7.2, 'p_align': 0.95},
+                 {'word': '感情\n', 'start_s': 7.3, 'end_s': 8.4, 'p_align': 0.4}, {'word': '西日を', 'start_s': 11.0, 'end_s': 11.5}, {'word': '飲んだ', 'start_s': 11.6, 'end_s': 12.5},
+                 {'word': '硝子の', 'start_s': 12.8, 'end_s': 13.2}, {'word': '向こう', 'start_s': 13.3, 'end_s': 14.5}]
+        suno = json.dumps({'aligned_words': words}, ensure_ascii=False)
+        await jz.new_project(); await jz.set_look(seed=4)
+        r = await jz.set_lyrics(text=suno)
+        ok(r['wordTimed'] == 2, f"both lines keep their word times ({r})")
+        cuts = lambda l: [(c['text'], c['start']) for c in l['cuts']]
+        l1, l2 = await jz.get_line(1), await jz.get_line(2)
+        st1 = dict(cuts(l1)); st2 = dict(cuts(l2))
+        ok(l1['cutTimes'] == 'words' and st1.get('重たい感情') == 6.7, f'line 1: 重たい感情 starts when it is sung (6.7) {cuts(l1)}')
+        ok(st2.get('飲んだ') == 11.6 and st2.get('硝子の向こう') == 12.8, f'line 2 follows its words too {cuts(l2)}')
+        ok(any(c['text'] == 'この、やけに重たい感情' for c in l1['cuts']), 'the recap cut (the whole line again) stays')
+        ok(l1['confidence'] == 0.4 and l2['confidence'] is None and (await jz.get_plan())['lines'][0]['confidence'] == 0.4, 'the lowest alignment confidence is reported per line')
+        base = await ev("""() => { const t = J.ui.project.media.text, W = t.words; t.words = []; J.uiApi.replan();
+          const s = J.media.lineCuts(J.ui.plan, 0).filter(c => !c.recap).map(c => +c.start.toFixed(2)); t.words = W; J.uiApi.replan(); return s; }""")
+        ok(len(base) >= 2 and base[1] != 6.7, f'without the word times the cut would start elsewhere ({base})')
+        ok(dict(cuts(await jz.get_line(1))).get('重たい感情') == 6.7, '… and with them back it starts at 6.7 again')
+        r = await jz.set_line_style(1, cut_times=[1.0])
+        ok(r['cutTimes'] == 'by hand' and dict(cuts(r)).get('重たい感情') == 6.0, f'cut times set by hand win {cuts(r)}')
+        await jz.set_line_style(1, cut_times='auto')
+        d = tempfile.mkdtemp(); pth = os.path.join(d, 'w.jizura.json'); await jz.save_project(pth)
+        await jz.new_project(); await jz.open_project(pth)
+        ok(dict(cuts(await jz.get_line(1))).get('重たい感情') == 6.7, 'save → open keeps the word times')
+        lrc = '[00:05.00]<00:05.00>この、<00:05.40>やけに<00:06.70>重たい<00:07.30>感情<00:08.40>\n[00:11.00]西日を飲んだ'
+        await jz.new_project(); await jz.set_look(seed=4)
+        r = await jz.set_lyrics(text=lrc)
+        l1 = await jz.get_line(1)
+        ok(r['wordTimed'] == 1 and dict(cuts(l1)).get('重たい感情') == 6.7 and [w['t'] for w in l1['words']] == [5, 5.4, 6.7, 7.3], f"enhanced LRC word tags give word times {[w['t'] for w in l1['words']]}")
+        fp = os.path.join(d, 'suno.json'); open(fp, 'w', encoding='utf-8').write(suno)
+        await jz.new_project(); await jz.set_look(seed=4)
+        await jz.page.set_input_files('#fileLrc', fp)
+        await jz.page.wait_for_function("() => J.ui.project.media.text.words.length === 2", timeout=10000)
+        ok(dict(cuts(await jz.get_line(1))).get('重たい感情') == 6.7, 'the 「LRC を読み込む」 button keeps the word times as well')
+        await jz.set_lyrics(text='[00:01.00]手で打った歌詞\n[00:04.00]時刻だけ')
+        ok(await ev("() => J.ui.project.media.text.words.length") == 0, 'lyrics without word times drop the old ones')
         ok(not jz.errors, f'no page errors {jz.errors[:3]}')
     print('FAILED:', len(fails)) if fails else print('all text style checks passed')
     sys.exit(1 if fails else 0)

@@ -2,7 +2,8 @@
    my-jizura (fork) — lyric text set by hand: where a line (or one cut of it) sits, how big, in which colour,
    and whether a long interlude shows the song title. (P1 of the production feedback, 2026-10-02)
    project.media.text = { interludeTitle: 'show' | 'hide',
-                          lines: { '<line>': { x, y, scale, color, cuts: { '<cut>': { x, y, scale, color } } } } }
+                          lines: { '<line>': { x, y, scale, color, cuts: { '<cut>': { x, y, scale, color } } } },
+                          words: [{ text, start, w: [[seconds, offset], …], p }] }   (word times from the lyrics import)
      x, y: offset in frame widths / heights (-0.5 … 0.5) · scale: 0.2 … 3 · color: '#rrggbb' (the text colour of that line / cut)
    Layout, motion, decorations, background graphic and cut times stay in the app's own per-line settings (project.overrides).
    Applied to plan.cuts right after J.plan() (from M.resolve): a fixed camera 'place' that moves / scales the lyric of the cut on top
@@ -24,7 +25,9 @@ J.register('cam', 'place', { name: '位置・大きさの指定', special: true,
     return Object.assign({}, b, { x: (b.x || 0) + (P.x || 0) * env.W, y: (b.y || 0) + (P.y || 0) * env.H, s: (b.s ?? 1) * (P.s || 1) });
   } }, 'my-jizura');
 
-M.textDefaults = () => ({ interludeTitle: 'show', lines: {} });
+M.textDefaults = () => ({ interludeTitle: 'show', lines: {}, words: [] });
+/* a lyric line as the word times count it: what the planner shows (no | note, no final !), without spaces and / * marks */
+M.normText = s => { s = String(s == null ? '' : s); const bar = s.indexOf('|'); if (bar >= 0) s = s.slice(0, bar); return s.trim().replace(/!$/, '').replace(/[\s/*]/g, ''); };
 /* untrusted input → valid project.media.text */
 M.normalizeText = t => {
   const d = M.textDefaults();
@@ -49,6 +52,21 @@ M.normalizeText = t => {
     if (Object.keys(o).length) d.lines[k] = o;
   }
   d.interludeTitle = t.interludeTitle === 'hide' ? 'hide' : 'show';
+  // word times: [{ text, start, w: [[t, offset]…] (in time order), p }]
+  for (const e of (Array.isArray(t.words) ? t.words : []).slice(0, 3000)) {
+    if (!isObj(e) || typeof e.text !== 'string' || !Array.isArray(e.w)) continue;
+    const text = M.normText(e.text).slice(0, 500), start = num(e.start, 0, 86400);
+    const w = [];
+    for (const x of e.w.slice(0, 400)) {
+      if (!Array.isArray(x)) continue;
+      const tt = num(x[0], 0, 86400), off = num(x[1], 0, 500);
+      if (tt != null && off != null && (!w.length || (tt >= w[w.length - 1][0] && off >= w[w.length - 1][1]))) w.push([tt, Math.round(off)]);
+    }
+    if (!text || !w.length) continue;
+    const o = { text, start: start != null ? start : w[0][0], w };
+    const pv = num(e.p, 0, 1); if (pv != null) o.p = pv;
+    d.words.push(o);
+  }
   return d;
 };
 
@@ -56,9 +74,63 @@ M.normalizeText = t => {
 M.lineCuts = (plan, li) => plan.cuts.filter(c => c.line === li && c.utext != null);
 
 /* project.media.text → plan.cuts (called from M.resolve with the checked media) */
-M.applyText = (m, plan) => {
+/* the word times of a plan line: the entry with the same text that starts nearest to it (a repeated chorus line has several) */
+M.lineWords = (m, ln) => {
+  const W = m && m.text && m.text.words;
+  if (!W || !W.length || !ln || ln.interlude) return null;
+  const key = M.normText(ln.text);
+  let best = null;
+  for (const e of W) if (e.text === key && (!best || Math.abs(e.start - ln.start) < Math.abs(best.start - ln.start))) best = e;
+  return best && Math.abs(best.start - ln.start) < 8 ? best : null;
+};
+/* when the character at `off` of the line is sung: its word's time, or between two words by how far into the word it is */
+function timeAt(w, off) {
+  let k = -1;
+  for (let i = 0; i < w.length; i++) if (w[i][1] <= off) k = i; else break;
+  if (k < 0) return null;
+  if (w[k][1] === off || k + 1 >= w.length) return w[k][1] === off ? w[k][0] : null;
+  return w[k][0] + (w[k + 1][0] - w[k][0]) * (off - w[k][1]) / Math.max(1, w[k + 1][1] - w[k][1]);
+}
+/* 語の時刻: the cuts inside a line change when their first word is sung (not by how long their text is).
+   A line whose cut times were set by hand (overrides cutTime) keeps them; a recap cut (the whole line again) keeps its place. */
+M.alignWords = (m, plan, project) => {
+  const W = m && m.text && m.text.words;
+  if (!W || !W.length) return;
+  const ovs = (project && project.overrides) || {};
+  plan.lines.forEach((ln, li) => {
+    const ov = ovs[li] || {};
+    if (ov.cutTime && Object.keys(ov.cutTime).length) return;
+    const e = M.lineWords(m, ln);
+    if (!e) return;
+    const cuts = M.lineCuts(plan, li).filter(c => !c.recap);
+    if (cuts.length < 2) return;
+    const full = M.normText(ln.text);
+    let cursor = 0;
+    for (let k = 0; k < cuts.length; k++) {
+      const piece = M.normText(cuts[k].utext);
+      const at = piece ? full.indexOf(piece, cursor) : -1;
+      if (at < 0) return;                                  // a cut that is not a plain piece of the line: leave the line as planned
+      cuts[k]._off = [...full.slice(0, at)].length; cursor = at + piece.length;
+    }
+    for (let k = 1; k < cuts.length; k++) {
+      const prev = cuts[k - 1], c = cuts[k], t = timeAt(e.w, c._off);
+      if (t == null) continue;
+      const T = J.clamp(t, prev.start + 0.22, c.end - 0.22);    // the same 0.22 s the planner keeps between cut starts
+      if (!(T > prev.start && T < c.end)) continue;
+      prev.end = T; c.start = T;
+    }
+    for (const c of cuts) {
+      delete c._off;
+      c.dur = c.end - c.start;
+      c.inDur = Math.min(c.inDur, c.dur * 0.45); c.outDur = Math.min(c.outDur, c.dur * 0.45);
+    }
+  });
+};
+
+M.applyText = (m, plan, project) => {
   const T = m && m.text;
   if (!T || !plan || !plan.cuts) return;
+  M.alignWords(m, plan, project);
   // 間奏の曲名: the title / artist stay in the project (and the LRC tags), only the interludes leave them out —
   // both a [間奏] line (params.showTitle) and the interlude the planner puts into a long gap between lines (the title as its text;
   // a blank, since an empty text would show '— interlude —')
