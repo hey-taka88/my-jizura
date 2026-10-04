@@ -78,8 +78,11 @@ tool_timeout_sec = 1800
 | `add_media` / `remove_media` | 画像・動画を足す（フォルダなら名前順）・外す |
 | `set_line_media` | 行ごとの画像（名前・番号・`none`＝画像なし・`auto`＝順番） |
 | `set_look` | 見た目：テーマのおまかせ、案の番号（同じ番号なら同じ見た目）、スタイル・雰囲気の固定 |
-| `get_line` / `set_line_style` | 1 行（またはその中の 1 カット）の見た目を固定：配置（中央・縦書き・画面突き抜け…）・登場／退場／保持の動き・カメラ・背景グラフィック・装飾（`[]` でなし）・カット数と 2 つ目以降の句の開始時刻・位置（x / y）・大きさ・文字色・固定（`lock`）。`auto` で自動に戻す。`get_line` で実際に使われた部品が分かる。`get_line` は語の時刻（`words`）、その行でいちばん低い合わせの確かさ（`confidence`、Suno の `p_align` など）、句の開始時刻の決まり方（`cutTimes`：`by hand` 手で指定 ＞ `words` 語の時刻 ＞ `auto` 文字数で配分）も返す |
+| `get_line` / `set_line_style` | 1 行（またはその中の 1 カット）の見た目を固定：配置（中央・縦書き・画面突き抜け…）・登場／退場／保持の動き・カメラ・背景グラフィック・装飾（`[]` でなし）・カット数と 2 つ目以降の句の開始時刻・位置（x / y）・大きさ・文字色・固定（`lock`）。`auto` で自動に戻す。`get_line` で実際に使われた部品が分かる。`get_line` は語の時刻（`words`）、その行でいちばん低い合わせの確かさ（`confidence`、Suno の `p_align` など）、句の開始時刻の決まり方（`cutTimes`：`by hand` 手で指定 ＞ `locked` 固定したときの時刻 ＞ `words` 語の時刻 ＞ `auto` 文字数で配分）も返す。語ごとに `p`（確かさ）と `used`（句の切り替えに使ったか）、カットごとに `sung`（その句を歌う時刻）が付く |
 | `set_text_options` | 長い間奏に曲名を出すか（曲名はプロジェクトに残る） |
+| `get_motion_plan` | 曲の時刻の範囲で、アプリが実際に作ったカットを読む（読むだけで何も変えない）：行（1 始まり）とその中のカット番号・時刻・文字・recap・配置・登場／退場／保持・加工・カメラ・切り替え・背景グラフィック・装飾・params・配色の番号・登場／退場の長さ・seed・固定されているか、と範囲で使われた部品の一覧（`inventory`）。候補（`set_look` の variation / seed）を見比べる、固定した範囲が変わっていないか確かめる、に使う |
+| `lock_motion_palette` | 採用した範囲を固定：範囲にかかる歌詞の行を、今のカット・動き・装飾・**句の開始時刻ごと**固定する（他の行に `set_look` や `set_line_style` をしても変わらない）。`lock=false` で外す（手で決めた句の時刻と、固定のあとに直した時刻は残る）。固定した行に `set_line_style` で位置・大きさ・文字色を変えても、カットと時刻はそのまま。`scheme` で範囲のカットの配色を固定。色（`bg_color` / `text_color` / `sub_color` / `accent_color` / `ghost_a` / `ghost_b`）と `chroma` は**プロジェクト全体**に効く（「配色」パネルと同じ）。基本色を渡すと `scheme` は 0。1 行だけの文字色は `set_line_style(color=…)` |
+| `set_word_times` | 今の歌詞はそのままで、語の時刻だけを足す（Suno の `aligned_words`・WhisperX の単語・拡張 LRC・words 付きの `lines` の JSON。例：`timing_master.json`）。行は同じ文字で時刻のいちばん近いものを使う。確かさ 0.1 未満の語と、行の外にある語の時刻は使わない。`without`（語の時刻がない行）・`unmatched`（どの行とも文字が合わない語の時刻）・`weak`（使わなかった語がある行）・`off`（歌う時刻に 0.3 秒より合わせきれなかったカット。行の表示が歌より短いときなど）を返す。ファイルの時刻を直して呼び直せばそのまま反映される |
 | `relink_media` | 開いたプロジェクトで読み込まれていない素材（`missing`）を、フォルダから中身で探して戻す（名前が変わっていても見つかる） |
 | `set_media_options` | 画像の並び・動き（寄る・流す・漂う・拍で脈打つ…）・つなぎ（クロスフェード・切り替え効果）・登場退場・加工（モノクロ・2 色トーン…）・暗さ・文字の下の暗幕、短い動画の伸ばし方（ループ・往復・止める・拍で頭出し） |
 | `media_omakase` | 「メディアのおまかせ」：動き・つなぎ・登場・加工・暗さ・並びをまとめて決める（呼ぶたびに別の案） |
@@ -139,7 +142,7 @@ python3 tools/jizura_cli.py plan --project out/mv.jizura.json --media pics/
 python3 tools/jizura_cli.py info
 ```
 
-ほかの指定：`--line-style 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1`（行の見た目を固定。`2:cut_times=1.6` で 2 つ目の句を 1.6 秒後に、`4.2:layout=vcols` で 4 行目の 2 カット目だけ）、`--no-interlude-title`、`--relink 素材フォルダ`（`--project` の素材を戻す）、`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
+ほかの指定：`--line-style 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1`（行の見た目を固定。`2:cut_times=1.6` で 2 つ目の句を 1.6 秒後に、`4.2:layout=vcols` で 4 行目の 2 カット目だけ）、`--word-times timing_master.json`（歌詞はそのままで語の時刻だけを足す）、`--no-interlude-title`、`--relink 素材フォルダ`（`--project` の素材を戻す）、`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
 `--res 720`、`--fps 30`、`--range 30-45`（その秒だけ）、`--no-audio`、`--force`（上書き）。一覧は `python3 tools/jizura_cli.py render -h`。
 
 ## うまくいかないとき

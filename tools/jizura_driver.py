@@ -185,19 +185,27 @@ JS_LINE = r"""(li) => {
   for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime', 'cutTech', 'lock']) if (ov[k] != null) style[k] = ov[k];
   if (style.cutTime) style.cutTime = Object.keys(style.cutTime).sort((a, b) => a - b).map(k => style.cutTime[k]);
   const wt = J.media.lineWords(P.media, ln);
-  return { line: li + 1, text: ln.text, start: r2(ln.start), end: r2(ln.end), interlude: !!ln.interlude, style, place: T,
-    words: wt ? wt.w.map(([t, off]) => ({ t: r2(t), at: off, text: [...J.media.normText(ln.text)].slice(off, (wt.w.find(x => x[1] > off) || [0, 9999])[1]).join('') })) : [],
+  const place = Object.assign({}, T); delete place.heldTimes;
+  return { line: li + 1, text: ln.text, start: r2(ln.start), end: r2(ln.end), interlude: !!ln.interlude, style, place,
+    // used: false = this word's time is not used for the cut starts (confidence below J.media.WEAK_WORD, or outside the line)
+    words: wt ? wt.w.map(x => ({ t: r2(x[0]), at: x[1], text: [...J.media.normText(ln.text)].slice(x[1], (wt.w.find(y => y[1] > x[1]) || [0, 9999])[1]).join(''),
+      p: x[2] != null ? r2(x[2]) : null, used: J.media.usableWord(x, ln) })) : [],
     confidence: wt && wt.p != null ? r2(wt.p) : null,
-    cutTimes: style.cutTime ? 'by hand' : wt ? 'words' : 'auto',
+    cutTimes: style.cutTime ? (Object.keys(ov.cutTime).every(k => T.heldTimes && T.heldTimes[k] != null && Math.abs(ov.cutTime[k] - T.heldTimes[k]) < 1e-6) ? 'locked' : 'by hand') : wt ? 'words' : 'auto',
     cuts: J.media.lineCuts(S.plan, li).map((c, k) => ({ cut: k + 1, text: c.utext, start: r2(c.start), end: r2(c.end), layout: c.layout,
       enter: c.enter, exit: c.exit, hold: c.hold, cam: c.cam === 'place' ? (c.camP || {}).base : c.cam, bg: c.bg, decor: (c.decor || []).map(d => d.id),
-      treat: c.treat, trans: c.trans || null, color: (S.plan.style.schemes[c.scheme] || {}).fg })) };
+      treat: c.treat, trans: c.trans || null, color: (S.plan.style.schemes[c.scheme] || {}).fg, sung: c.sungAt != null ? r2(c.sungAt) : null })) };
 }"""
 
 JS_SET_LINE_STYLE = r"""(o) => {
-  const S = J.ui, P = S.project, li = o.li, m = P.media;
-  const ov = Object.assign({}, P.overrides[li] || {});
-  const wasLocked = !!ov.lock; delete ov.lock; delete ov.lockedSeed; delete ov.lockedCuts;   // re-locked below with the new look
+  const S = J.ui, P = S.project, li = o.li;
+  const wasLocked = !!(P.overrides[li] || {}).lock;
+  // only placement / size / colour: a locked line stays locked as it is (same cuts, same cut times) — anything that changes the
+  // cuts themselves unlocks it, lays it out again and re-locks it with the new look (the cut times its lock kept go too)
+  const structural = !!o.reset || ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime'].some(k => o[k] !== undefined);
+  const keepLock = wasLocked && !structural && o.lock !== false;
+  if (!keepLock) J.media.unlockLine(P, li);
+  const m = P.media, ov = Object.assign({}, P.overrides[li] || {});
   const put = (obj, k, v) => { if (v === undefined) return; if (v === null || v === 'auto') delete obj[k]; else obj[k] = v; };
   if (o.cut == null) {
     for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime']) put(ov, k, o[k]);
@@ -219,12 +227,69 @@ JS_SET_LINE_STYLE = r"""(o) => {
   if (Object.keys(ov).length) P.overrides[li] = ov; else delete P.overrides[li];
   J.uiApi.replan();
   // 固定: the line keeps exactly this look when other lines are rolled again (the app's line lock)
-  if (o.lock === true || (o.lock == null && wasLocked && !o.reset)) {
-    const ln = S.plan.lines[li];
-    P.overrides[li] = Object.assign({}, P.overrides[li] || {}, { lock: true, lockedSeed: ln.seed, lockedCuts: J.lineSnapshot(S.plan, li) || undefined });
-    J.uiApi.replan();
+  if (!keepLock && (o.lock === true || (o.lock == null && wasLocked && !o.reset))) {
+    if (J.media.lockLine(P, S.plan, li)) J.uiApi.replan();
   }
   J.uiApi.flushSave();
+}"""
+
+# the cuts in a time range as the app made them (read-only)
+JS_MOTION = r"""([a, b]) => {
+  const S = J.ui, P = S.project, plan = S.plan, ovs = P.overrides || {}, r3 = x => Math.round(x * 1000) / 1000;
+  const cuts = plan.cuts.filter(c => c.end > a && (b == null || c.start < b)).map(c => {
+    const own = c.utext != null ? J.media.lineCuts(plan, c.line) : null;
+    return { line: c.line + 1, cut: own ? own.indexOf(c) + 1 : null, interlude: c.utext == null, start: r3(c.start), end: r3(c.end),
+      text: c.utext != null ? c.utext : '', lineText: c.lineText || '', recap: !!c.recap, layout: c.layout, enter: c.enter, exit: c.exit,
+      hold: c.hold, treat: c.treat || null, cam: c.cam === 'place' ? (c.camP || {}).base : c.cam, trans: c.trans || null, bg: c.bg || null,
+      decor: (c.decor || []).map(d => d.id), params: c.params || {}, scheme: c.scheme, inDur: r3(c.inDur), outDur: r3(c.outDur), seed: c.seed,
+      locked: !!(ovs[c.line] || {}).lock };
+  });
+  const distinct = k => [...new Set(cuts.filter(c => !c.interlude).map(c => c[k]).filter(Boolean))];
+  return { range: [a, b], duration: r3(S.plan.lines.length ? Math.max(...plan.cuts.map(c => c.end)) : 0), seed: P.seed, theme: P.themeId || null,
+    style: P.style, mood: P.mood, fx: P.fx, cutCount: cuts.length,
+    inventory: Object.fromEntries(['layout', 'enter', 'exit', 'hold', 'treat', 'cam'].map(k => [k, distinct(k)])), cuts };
+}"""
+
+# 固定 for every lyric line in a time range (+ the project's colours / chroma when given)
+JS_LOCK_RANGE = r"""(o) => {
+  const S = J.ui, P = S.project;
+  const n0 = J.resolveStyle(P).schemes.length;
+  if (o.scheme != null && !(o.scheme >= 0 && o.scheme < n0)) return { error: `scheme は 0〜${n0 - 1}（このスタイルの配色の数）: ${o.scheme}` };
+  const ids = [...new Set(S.plan.cuts.filter(c => c.utext != null && c.end > o.start && c.start < o.end).map(c => c.line))].sort((x, y) => x - y);
+  if (o.lock) for (const li of ids) J.media.lockLine(P, S.plan, li, o.scheme);
+  else for (const li of ids) J.media.unlockLine(P, li);
+  // the project's colours (every line, as the 配色 panel): base colours go into scheme 0, accent / ghosts into every scheme
+  const changed = [];
+  const c = Object.assign({}, P.colors);
+  for (const [k, v] of [['bg', o.bg], ['fg', o.fg], ['sub', o.sub]]) if (v) { c[k] = v; c.enabled = true; changed.push(k); }
+  for (const [k, v] of [['accent', o.accent], ['ghostA', o.ghostA], ['ghostB', o.ghostB]]) if (v) { c[k] = v; c.accentOn = true; changed.push(k); }
+  if (changed.length) P.colors = c;
+  if (o.chroma != null) { P.fx = Object.assign({}, P.fx, { chroma: o.chroma }); changed.push('chroma'); }
+  J.uiApi.syncUI(); J.uiApi.replan(); J.uiApi.flushSave();
+  return { lines: ids.map(li => li + 1), locked: !!o.lock, scheme: o.lock ? o.scheme : null, global: changed,
+    colors: changed.some(k => k !== 'chroma') ? P.colors : undefined, chroma: P.fx.chroma };
+}"""
+
+# word times only (the lyrics stay): a word list / enhanced LRC / lines with words
+JS_SET_WORDS = r"""([text, name]) => {
+  const S = J.ui, P = S.project, r2 = x => Math.round(x * 100) / 100 || 0;
+  const r = J.lyricsImport.toLrc(String(text), name || '');
+  if (J.lyricsImport) J.lyricsImport.last = null;
+  if (!(r.words || []).length) return { error: 'このファイルには語ごとの時刻がありません（Suno の aligned_words・WhisperX の単語・拡張 LRC・words 付きの lines）' };
+  P.media.text = Object.assign({}, P.media.text, { words: r.words });
+  P.media = J.media.normalize(P.media);
+  J.uiApi.replan(); J.uiApi.flushSave();
+  const used = new Set();
+  const lines = S.plan.lines.filter(ln => !ln.interlude).map(ln => { const e = J.media.lineWords(P.media, ln); if (e) used.add(e); return [ln, e]; });
+  return { entries: P.media.text.words.length, lines: lines.length, wordTimed: lines.filter(x => x[1]).length,
+    without: lines.filter(x => !x[1]).slice(0, 40).map(([ln]) => ({ line: ln.index + 1, text: ln.text })),
+    unmatched: P.media.text.words.filter(e => !used.has(e)).slice(0, 40).map(e => ({ text: e.text, start: r2(e.start) })),
+    weak: lines.filter(([ln, e]) => e && e.w.some(w => !J.media.usableWord(w, ln))).map(([ln, e]) => ({ line: ln.index + 1, text: ln.text,
+      confidence: e.p != null ? r2(e.p) : null, unused: e.w.filter(w => !J.media.usableWord(w, ln)).length, words: e.w.length })),
+    // cuts that could not start when they are sung (more than 0.3 s off: the line is shown shorter than it is sung, or cuts too close)
+    off: lines.map(([ln]) => [ln, J.media.lineCuts(S.plan, ln.index).filter(c => c.sungAt != null && Math.abs(c.start - c.sungAt) > 0.3)])
+      .filter(x => x[1].length).map(([ln, cs]) => ({ line: ln.index + 1, text: ln.text, shownUntil: r2(ln.visEnd),
+        cuts: cs.map(c => ({ text: c.utext, start: r2(c.start), sung: r2(c.sungAt) })) })) };
 }"""
 
 JS_SET_LOOK = r"""(o) => {
@@ -520,7 +585,8 @@ class Jizura:
         'auto' = back to automatic.
         cuts: how many cuts the line is split into; cut_times: when cuts 2, 3 … start (seconds from the line start); single: one cut.
         x / y: move the lyric (-0.5 … 0.5 of the frame), size: 0.2 … 3, color: '#rrggbb' text colour.
-        lock: keep exactly this look when other lines change (a locked line is re-locked after a change). reset: clear everything"""
+        lock: keep exactly this look and its cut times when other lines change. On a locked line, x / y / size / color keep its cuts and
+        cut times; other changes lay it out again and re-lock it. reset: clear everything"""
         li = await self._line_index(line)
         O = (await self.options())['lyric']
         o = {'li': li}
@@ -569,6 +635,46 @@ class Jizura:
         if reset: o['reset'] = True
         await self._ev(JS_SET_LINE_STYLE, o)
         return await self.get_line(line)
+
+    async def get_motion_plan(self, start=0, end=None):
+        """the cuts the app made in [start, end) seconds (end None = to the end): line (1 = first) / cut number, time, text, layout,
+        enter / exit / hold, treatment, camera, transition, background, decorations, params, colour scheme, in / out durations, seed,
+        locked — and which parts the range uses. Read-only"""
+        if start < 0 or (end is not None and end <= start): raise JizuraError('0 <= start < end の区間を指定してください')
+        return await self._ev(JS_MOTION, [float(start), None if end is None else float(end)])
+
+    async def lock_motion_palette(self, start, end, lock=True, scheme=None, bg_color=None, text_color=None, sub_color=None,
+                                  accent_color=None, ghost_a=None, ghost_b=None, chroma=None):
+        """固定 for every lyric line that plays in [start, end): each keeps its cuts, motion and cut times when other lines change
+        (lock=False lets them go). scheme: pin their cuts to this colour scheme (0 = the main one; bg / text / sub colours apply there —
+        given one of them, scheme defaults to 0). The colours and chroma are the PROJECT's (every line), as in the 配色 panel"""
+        if start < 0 or end <= start: raise JizuraError('0 <= start < end の区間を指定してください')
+        cols = {'bg': bg_color, 'fg': text_color, 'sub': sub_color, 'accent': accent_color, 'ghostA': ghost_a, 'ghostB': ghost_b}
+        for k, v in cols.items():
+            if v is not None and not re.match(r'^#[0-9a-fA-F]{6}$', str(v)): raise JizuraError(f'色は #rrggbb: {k}={v}')
+        if chroma is not None and not 0 <= float(chroma) <= 1: raise JizuraError(f'chroma は 0〜1: {chroma}')
+        if scheme is not None and not isinstance(scheme, int): raise JizuraError(f'scheme は配色の番号（0 = 基本）: {scheme}')
+        if scheme is None and lock and any(cols[k] for k in ('bg', 'fg', 'sub')): scheme = 0
+        if not lock and scheme is not None: raise JizuraError('scheme は lock=True のときだけ')
+        o = {'start': float(start), 'end': float(end), 'lock': bool(lock), 'scheme': scheme, 'chroma': None if chroma is None else float(chroma)}
+        o.update({k: (v.lower() if v else None) for k, v in cols.items()})
+        r = await self._ev(JS_LOCK_RANGE, o)
+        if 'error' in r: raise JizuraError(r['error'])
+        return r
+
+    async def set_word_times(self, text=None, path=None):
+        """word times only (the lyrics and every setting stay): Suno aligned_words / WhisperX words / enhanced LRC / JSON lines that
+        carry their own words. A line takes the entry with the same text that starts nearest to it. Returns which lines have them,
+        the entries no line took, and the lines with words whose time is not used (confidence below 0.1, or outside the line)"""
+        if path is not None:
+            if not os.path.isfile(path): raise JizuraError(f'ファイルが見つかりません: {path}')
+            text, name = read_text(path), os.path.basename(path)
+        elif text is None: raise JizuraError('text か path を指定してください')
+        else: name = ''
+        if len(text) > 5_000_000: raise JizuraError('ファイルが大きすぎます')
+        r = await self._ev(JS_SET_WORDS, [text, name])
+        if 'error' in r: raise JizuraError(r['error'])
+        return r
 
     async def set_text_options(self, interlude_title=None):
         """interlude_title: show the song title / artist on long interludes (the title stays in the project either way)"""

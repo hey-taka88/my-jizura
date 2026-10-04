@@ -4,7 +4,10 @@ usage: python3 build.py && python3 dev/text_style_e2e.py [--browser chromium]
   colour scheme (background, accents) in a style with several schemes, also after it is locked · one cut takes its own background
   and decoration · single=False and 'auto' clear what they set · x / y / size move the lyric (the 'place' camera) · same plan twice ·
   語の時刻: word times from Suno words, enhanced LRC and the 「LRC を読み込む」 button make the cuts of a line change when their word is
-  sung (a recap cut and cut times set by hand stay), the lowest alignment confidence is reported, save → open keeps them.
+  sung (a recap cut and cut times set by hand stay), the lowest alignment confidence is reported, save → open keeps them ·
+  固定: a line with a recap cut keeps its cut times when locked (the app's lock alone moves them), through set_look and a restyle;
+  unlocking in the app lets the kept times go, a cut time set by hand stays (also one changed after the lock) · colour / position /
+  size on a locked line keep its cut times (also after new word times), a layout change re-lays it · Whisper segments keep their words.
 Exit code 0 = all checks passed."""
 import asyncio, json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
@@ -105,6 +108,71 @@ async def main():
         ok(dict(cuts(await jz.get_line(1))).get('重たい感情') == 6.7, 'the 「LRC を読み込む」 button keeps the word times as well')
         await jz.set_lyrics(text='[00:01.00]手で打った歌詞\n[00:04.00]時刻だけ')
         ok(await ev("() => J.ui.project.media.text.words.length") == 0, 'lyrics without word times drop the old ones')
+        print('固定と句の時刻')
+        await jz.new_project(lyrics='[00:01.00]この、やけに/重たい感情\n[00:06.00]西日を飲んだ/硝子の向こう\n[00:11.00]紙の値札')
+        rl = None
+        for seed in range(1, 60):
+            await jz.set_look(seed=seed)
+            rl = await ev("() => { const c = J.ui.plan.cuts.find(c => c.recap); return c ? c.line : null; }")
+            if rl is not None: break
+        ok(rl is not None, f'a line with a recap cut (seed {seed}, line {rl})')
+        if rl is not None:
+            ln = rl + 1
+            t0 = [(c['text'], c['start'], c['end']) for c in (await jz.get_line(ln))['cuts']]
+            old = await ev(f'''() => {{ const S = J.ui, P = S.project, li = {rl}, keep = JSON.stringify(P.overrides[li] || null);
+              P.overrides[li] = Object.assign({{}}, P.overrides[li] || {{}}, {{ lock: true, lockedSeed: S.plan.lines[li].seed, lockedCuts: J.lineSnapshot(S.plan, li) }});
+              J.uiApi.replan(); const r = J.media.lineCuts(S.plan, li).map(c => +c.start.toFixed(2));
+              if (keep === 'null') delete P.overrides[li]; else P.overrides[li] = JSON.parse(keep); J.uiApi.replan(); return r; }}''')
+            ok(old != [c[1] for c in t0], f'(the app\'s lock alone moves the cut starts of this line: {[c[1] for c in t0]} → {old})')
+            r = await jz.set_line_style(ln, lock=True)
+            ok([(c['text'], c['start'], c['end']) for c in r['cuts']] == t0 and r['cutTimes'] == 'locked', f"set_line_style(lock) keeps them {[(c['text'], c['start']) for c in r['cuts']]}")
+            await jz.set_look(seed=seed + 100)
+            ok([(c['text'], c['start'], c['end']) for c in (await jz.get_line(ln))['cuts']] == t0, '… also when the other lines are laid out again')
+            r = await jz.set_line_style(ln, layout='center')
+            ok(r['cutTimes'] == 'locked' and all(c['layout'] == 'center' for c in r['cuts'] if c['text'] != r['text'].replace('/', '')), f"a change re-locks with the times of the new look ({r['cutTimes']})")
+            # the app's lock button (12_ui.js) turns the lock off: the times the lock kept go with it
+            await ev(f"() => {{ const o = J.ui.project.overrides[{rl}]; delete o.lock; delete o.lockedSeed; delete o.lockedCuts; J.uiApi.replan(); }}")
+            r = await jz.get_line(ln)
+            ok('cutTime' not in r['style'] and r['cutTimes'] == 'auto' and not await ev(f"() => !!(J.ui.project.media.text.lines[{rl}] || {{}}).heldTimes"),
+               f"unlocking in the app lets the kept cut times go ({r['style']})")
+            await jz.set_line_style(ln, cut_times=[1.0], lock=True)
+            r = await jz.set_line_style(ln, lock=False)
+            ok(r['style'].get('cutTime', [None])[0] == 1.0 and r['cutTimes'] == 'by hand', f"a cut time set by hand stays after unlocking ({r['style'].get('cutTime')})")
+        print('固定のあとの編集（Codex レビュー）')
+        await jz.new_project(lyrics='[00:01.00]ああ/いい/うう\n[00:09.00]次の行'); await jz.set_look(seed=123)
+        await jz.set_line_style(1, cuts=3, layout='center')
+        await jz.lock_motion_palette(1, 8)
+        st0 = [c['start'] for c in (await jz.get_line(1))['cuts']]
+        # the 「カットの開始時刻」 field (12_ui.js) changes cut 2 of the locked line: the same model change
+        await ev("() => { const P = J.ui.project, ov = P.overrides[0]; P.overrides[0] = Object.assign({}, ov, { cutTime: Object.assign({}, ov.cutTime, { 1: 2.5 }) }); J.uiApi.replan(); }")
+        await jz.lock_motion_palette(1, 8, lock=False)
+        r = await jz.get_line(1)
+        ok(r['cuts'][1]['start'] == 3.5 and r['cutTimes'] == 'by hand' and 'lock' not in r['style'],
+           f"a cut time changed after the lock stays when the lock goes ({st0} → {[c['start'] for c in r['cuts']]}, {r['cutTimes']})")
+        await jz.set_line_style(1, cut_times='auto'); await jz.lock_motion_palette(1, 8)
+        st1 = [c['start'] for c in (await jz.get_line(1))['cuts']]
+        sheet = json.dumps({'lines': [{'text': 'ああ/いい/うう', 'start': 1.0, 'words': [{'word': 'ああ', 'start': 1.0}, {'word': 'いい', 'start': 4.5}, {'word': 'うう', 'start': 7.0}]}]}, ensure_ascii=False)
+        await jz.set_word_times(text=sheet)
+        ok([c['start'] for c in (await jz.get_line(1))['cuts']] == st1, 'word times do not move a locked line')
+        r = await jz.set_line_style(1, color='#a34f60')
+        ok([c['start'] for c in r['cuts']] == st1 and r['style'].get('lock') and r['cutTimes'] == 'locked' and all(c['color'] == '#a34f60' for c in r['cuts']),
+           f"a colour on a locked line keeps its cut times and lock ({st1} → {[c['start'] for c in r['cuts']]})")
+        lay = [(c['layout'], c['enter']) for c in r['cuts']]
+        r = await jz.set_line_style(1, y=-0.2, size=1.3)
+        cam = await ev("() => J.media.lineCuts(J.ui.plan, 0).map(c => c.cam)")
+        ok([c['start'] for c in r['cuts']] == st1 and [(c['layout'], c['enter']) for c in r['cuts']] == lay and all(c == 'place' for c in cam), 'position / size on a locked line: same cuts, moved')
+        r = await jz.set_line_style(1, y='auto', size='auto')
+        cam = await ev("() => J.media.lineCuts(J.ui.plan, 0).map(c => c.cam)")
+        ok(r['place'] == {'color': '#a34f60'} and 'place' not in cam and r['style'].get('lock'), f'… and back where it was laid out ({cam})')
+        r = await jz.set_line_style(1, layout='vcols')
+        ok(r['style'].get('lock') and all(c['layout'] == 'vcols' for c in r['cuts'] if c['text'] != 'ああいいうう') and r['cuts'][1]['start'] != st1[1],
+           f"a layout change lays the line out again (with its word times) and re-locks it {[c['start'] for c in r['cuts']]}")
+        print('Whisper segments with words')
+        seg = json.dumps({'segments': [{'start': 2.0, 'end': 5.0, 'text': ' 夜明けの 色を', 'words': [{'word': ' 夜明けの', 'start': 2.0, 'probability': 0.9}, {'word': ' 色を', 'start': 3.4, 'probability': 0.8}]},
+                                       {'start': 6.0, 'end': 8.0, 'text': ' 覚えてる', 'words': [{'word': ' 覚えてる', 'start': 6.1}]}]}, ensure_ascii=False)
+        r = await jz.set_lyrics(text=seg)
+        l1 = await jz.get_line(1)
+        ok(r['wordTimed'] == 2 and [w['t'] for w in l1['words']] == [2, 3.4] and l1['confidence'] == 0.8, f"segments keep the words they carry ({r}, {[w['t'] for w in l1['words']]})")
         ok(not jz.errors, f'no page errors {jz.errors[:3]}')
     print('FAILED:', len(fails)) if fails else print('all text style checks passed')
     sys.exit(1 if fails else 0)
