@@ -25,7 +25,7 @@ KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
          'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4',
          'add_timed_media', 'remove_timed_media', 'get_line', 'set_line_style', 'set_text_options', 'relink_media',
-         'log_note', 'run_info', 'start_run', 'get_motion_plan', 'lock_motion_palette', 'set_word_times'}
+         'log_note', 'run_info', 'start_run', 'get_motion_plan', 'lock_motion_palette', 'set_word_times', 'set_range_style'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -227,6 +227,11 @@ async def main():
             await call('lock_motion_palette', {'start': 0, 'end': 30, 'lock': False})
             l4 = await call('get_line', {'line': 4})
             ok('lock' not in l4['style'] and l4['cutTimes'] == 'words', f"lock=false lets the range go (word times again: {l4['cutTimes']})")
+            r = await call('set_range_style', {'start': 17, 'end': 21, 'tone': 'quiet'})
+            m3 = await call('get_motion_plan', {'start': 17, 'end': 21})
+            ok(r['lines'] == [4] and [(c['layout'], c['enter'], c['tone']) for c in m3['cuts'] if not c['interlude']] == [('center', 'blur', 'quiet')],
+               f"set_range_style quiet: one big, soft cut ({r})")
+            await call('set_range_style', {'start': 17, 'end': 21, 'tone': 'normal'})
             print('interlude title')
             ok(p6['title'] == 'あの日の青', 'the title is in the project')
             t_on = md5(await call('preview', {'times': [13.0], 'width': 320}))
@@ -282,7 +287,7 @@ async def main():
                f"previews and exports name the project state they came from ({len(run['projects'])} states)")
             ok(any(e['tool'] == 'set_line_style' for e in run['errors']) and run['notes'][-1]['text'] == '12 秒で文字が上で切れた', 'refused calls and notes are in it')
             ph = {c['tool']: c['phase'] for c in calls}
-            ok(ph.get('get_motion_plan') == 'check' and ph.get('lock_motion_palette') == 'edit' and ph.get('set_word_times') == 'edit' and 'timing_master.json' in ins,
+            ok(ph.get('get_motion_plan') == 'check' and ph.get('lock_motion_palette') == 'edit' and ph.get('set_word_times') == 'edit' and ph.get('set_range_style') == 'edit' and 'timing_master.json' in ins,
                f"the new tools are recorded in their phase {[(k, ph.get(k)) for k in ('get_motion_plan', 'lock_motion_palette', 'set_word_times')]}")
             r = await call('start_run', {'title': '次の曲'})
             ok(r['dir'] != info['dir'] and '次の曲' in r['dir'] and os.path.isfile(os.path.join(d, r['dir'], 'run.json')), f"start_run opens a new record ({r['dir']})")

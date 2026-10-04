@@ -52,6 +52,7 @@ M.normalizeText = t => {
       if (/^\d{1,2}$/.test(hk) && +hk >= 1 && n != null) held[+hk] = n;
     }
     if (Object.keys(held).length) o.heldTimes = held;
+    if (v.tone === 'quiet' || v.tone === 'calm') o.tone = v.tone;   // set_range_style: how strongly the line moves (M.TONES)
     for (const [ck, cv] of Object.entries(isObj(v.cuts) ? v.cuts : {}).slice(0, 12)) {
       if (!/^\d{1,2}$/.test(ck) || !isObj(cv)) continue;
       const c = one(cv); if (Object.keys(c).length) cuts[ck] = c;
@@ -179,6 +180,31 @@ M.unlockLine = (project, li) => {
   if (project.overrides) { if (Object.keys(ov).length) project.overrides[li] = ov; else delete project.overrides[li]; }
 };
 
+/* 見せ方の強さ (set_range_style): the per-line settings a tone writes into project.overrides — the same keys as the app's
+   per-line settings, so the planner lays the line out with them. On top, a toned line shows no screen effects
+   (shake / glitch / flash / colour split … — M.applyText drops the events while it is on screen).
+   quiet: one cut, big and centred, soft in and out, a slow breath — a rest between busy parts.
+   calm:  JIZURA's own layout and cuts, but soft in and out, a slow drift, no decorations, no camera hits.
+   Both leave out the cut-to-cut transitions (they turn the entrance into a hard cut): the app's 「つなぎなし」 per cut (cutTech trans 'none'). */
+M.TONE_KEYS = ['single', 'cuts', 'layout', 'enter', 'exit', 'hold', 'cam', 'treat', 'decor'];
+M.TONES = {
+  quiet: { single: true, layout: 'center', enter: 'blur', exit: 'blur', hold: 'breathe', cam: 'push', treat: 'none', decor: [] },
+  calm: { enter: 'blur', exit: 'blur', hold: 'drift', cam: 'push', treat: 'none', decor: [] },
+};
+/* one line's overrides with a tone ('normal' = without): what a tone sets replaces what was set for those parts */
+M.applyTone = (ov, tone) => {
+  const o = Object.assign({}, ov);
+  for (const k of M.TONE_KEYS) delete o[k];
+  const ct = {};
+  for (const [k, t] of Object.entries(o.cutTech || {})) { const t2 = Object.assign({}, t); if (t2.trans === 'none') delete t2.trans; if (Object.keys(t2).length) ct[k] = t2; }
+  if (M.TONES[tone]) {
+    Object.assign(o, JSON.parse(JSON.stringify(M.TONES[tone])));
+    for (let k = 0; k < (tone === 'quiet' ? 1 : 12); k++) ct[k] = Object.assign({}, ct[k] || {}, { trans: 'none' });
+  }
+  if (Object.keys(ct).length) o.cutTech = ct; else delete o.cutTech;
+  return o;
+};
+
 M.applyText = (m, plan, project) => {
   const T = m && m.text;
   if (!T || !plan || !plan.cuts) return;
@@ -192,6 +218,10 @@ M.applyText = (m, plan, project) => {
     if (c.text && c.utext == null) c.text = ' ';
   }
   const lines = T.lines || {};
+  // a toned line (set_range_style) shows no screen effects while it is on screen
+  const calm = Object.keys(lines).filter(k => lines[k].tone).map(k => M.lineCuts(plan, +k)).filter(cs => cs.length)
+    .map(cs => [cs[0].start - 0.05, cs[cs.length - 1].end]);
+  if (calm.length) plan.events = plan.events.filter(e => !calm.some(([a, b]) => e.t >= a && e.t < b));
   const n0 = plan.style.schemes.length;
   // text colours: for every colour used, a copy of every scheme at n0 + i·n0 + base — so any index, also one a locked line kept
   // from an earlier plan, still tells its own scheme (index % n0) and the colour never takes the background / accents of another

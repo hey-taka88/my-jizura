@@ -113,7 +113,8 @@ JS_PLAN = r"""() => {
       const wt = J.media.lineWords(P.media, ln);
       return { line: i + 1, start: r2(ln.start), end: r2(ln.end), text: ln.text, media: c ? name(c.assetId) : null,
         choice: own.has(i) ? (own.get(i) ? name(own.get(i)) : 'none') : 'auto',
-        words: wt ? wt.w.length : 0, confidence: wt && wt.p != null ? r2(wt.p) : null };   // word times (cuts follow the singing); lowest alignment confidence
+        words: wt ? wt.w.length : 0, confidence: wt && wt.p != null ? r2(wt.p) : null,   // word times (cuts follow the singing); lowest alignment confidence
+        tone: (P.media.text.lines[i] || {}).tone || null };                              // set_range_style
     }),
     media: m.assets.map((a, i) => ({ n: i + 1, name: a.name, id: a.id, type: a.type, w: a.w, h: a.h, duration: a.duration, loaded: J.mediaAssets.has(a.id) })),
     mediaOptions: { auto: m.autoFill.back.mode === 'perLine', order: m.autoFill.back.order, hold: m.autoFill.back.hold, fit: m.autoFill.back.fit,
@@ -185,8 +186,8 @@ JS_LINE = r"""(li) => {
   for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime', 'cutTech', 'lock']) if (ov[k] != null) style[k] = ov[k];
   if (style.cutTime) style.cutTime = Object.keys(style.cutTime).sort((a, b) => a - b).map(k => style.cutTime[k]);
   const wt = J.media.lineWords(P.media, ln);
-  const place = Object.assign({}, T); delete place.heldTimes;
-  return { line: li + 1, text: ln.text, start: r2(ln.start), end: r2(ln.end), interlude: !!ln.interlude, style, place,
+  const place = Object.assign({}, T); delete place.heldTimes; delete place.tone;
+  return { line: li + 1, text: ln.text, start: r2(ln.start), end: r2(ln.end), interlude: !!ln.interlude, style, place, tone: T.tone || null,
     // used: false = this word's time is not used for the cut starts (confidence below J.media.WEAK_WORD, or outside the line)
     words: wt ? wt.w.map(x => ({ t: r2(x[0]), at: x[1], text: [...J.media.normText(ln.text)].slice(x[1], (wt.w.find(y => y[1] > x[1]) || [0, 9999])[1]).join(''),
       p: x[2] != null ? r2(x[2]) : null, used: J.media.usableWord(x, ln) })) : [],
@@ -242,7 +243,7 @@ JS_MOTION = r"""([a, b]) => {
       text: c.utext != null ? c.utext : '', lineText: c.lineText || '', recap: !!c.recap, layout: c.layout, enter: c.enter, exit: c.exit,
       hold: c.hold, treat: c.treat || null, cam: c.cam === 'place' ? (c.camP || {}).base : c.cam, trans: c.trans || null, bg: c.bg || null,
       decor: (c.decor || []).map(d => d.id), params: c.params || {}, scheme: c.scheme, inDur: r3(c.inDur), outDur: r3(c.outDur), seed: c.seed,
-      locked: !!(ovs[c.line] || {}).lock };
+      locked: !!(ovs[c.line] || {}).lock, tone: (P.media.text.lines[c.line] || {}).tone || null };
   });
   const distinct = k => [...new Set(cuts.filter(c => !c.interlude).map(c => c[k]).filter(Boolean))];
   return { range: [a, b], duration: r3(S.plan.lines.length ? Math.max(...plan.cuts.map(c => c.end)) : 0), seed: P.seed, theme: P.themeId || null,
@@ -290,6 +291,36 @@ JS_SET_WORDS = r"""([text, name]) => {
     off: lines.map(([ln]) => [ln, J.media.lineCuts(S.plan, ln.index).filter(c => c.sungAt != null && Math.abs(c.start - c.sungAt) > 0.3)])
       .filter(x => x[1].length).map(([ln, cs]) => ({ line: ln.index + 1, text: ln.text, shownUntil: r2(ln.visEnd),
         cuts: cs.map(c => ({ text: c.utext, start: r2(c.start), sung: r2(c.sungAt) })) })) };
+}"""
+
+# 見せ方の強さ for every lyric line in a time range (J.media.TONES, written as the app's per-line settings)
+JS_SET_RANGE_STYLE = r"""(o) => {
+  const S = J.ui, P = S.project, M = J.media;
+  const ids = [...new Set(S.plan.cuts.filter(c => c.utext != null && c.end > o.start && c.start < o.end).map(c => c.line))].sort((a, b) => a - b);
+  // the other lines may change too (the planner avoids parts used just before): reported, so a kept range can be locked first
+  const sig = () => S.plan.lines.map((ln, li) => ids.includes(li) ? null : JSON.stringify(M.lineCuts(S.plan, li).map(c => [c.start, c.layout, c.enter, c.exit, c.hold, c.cam])));
+  const before = sig(), relock = [];
+  for (const li of ids) {
+    if ((P.overrides[li] || {}).lock) { relock.push(li); M.unlockLine(P, li); }   // locked: laid out with the tone, then locked again
+    let ov = Object.assign({}, P.overrides[li] || {});
+    const lines = Object.assign({}, P.media.text.lines), L = Object.assign({}, lines[li] || {});
+    if (o.tone) {                                                // the tone replaces what was set for its parts
+      ov = M.applyTone(ov, o.tone);
+      if (o.tone === 'normal') delete L.tone; else L.tone = o.tone;
+    }
+    for (const [k, v] of Object.entries(o.parts || {})) { if (v === 'auto') delete ov[k]; else ov[k] = v; }
+    if (o.size != null) { if (o.size === 'auto') delete L.scale; else L.scale = o.size; }
+    if (Object.keys(ov).length) P.overrides[li] = ov; else delete P.overrides[li];
+    if (Object.keys(L).length) lines[li] = L; else delete lines[li];
+    P.media.text = Object.assign({}, P.media.text, { lines });
+  }
+  P.media = M.normalize(P.media);
+  J.uiApi.replan();
+  if (relock.length) { for (const li of relock) M.lockLine(P, S.plan, li); J.uiApi.replan(); }
+  J.uiApi.flushSave();
+  const after = sig();
+  return { lines: ids.map(li => li + 1), tone: o.tone || null, relocked: relock.map(li => li + 1),
+    othersChanged: after.map((s, li) => (s !== before[li] ? li + 1 : 0)).filter(Boolean) };
 }"""
 
 JS_SET_LOOK = r"""(o) => {
@@ -661,6 +692,25 @@ class Jizura:
         r = await self._ev(JS_LOCK_RANGE, o)
         if 'error' in r: raise JizuraError(r['error'])
         return r
+
+    async def set_range_style(self, start, end, tone=None, layout=None, enter=None, exit=None, hold=None, cam=None, size=None):
+        """見せ方の強さ for every lyric line that plays in [start, end) seconds. tone: 'quiet' (one cut, big and centred, soft in and
+        out, a slow breath), 'calm' (JIZURA's own layout and cuts, soft in and out, a slow drift) — both without decorations, camera
+        hits or screen effects — or 'normal' (back to automatic). layout / enter / exit / hold / cam: one part for the whole range on
+        top ('auto' = automatic). size: 0.2 … 3 ('auto' = as laid out). Locked lines are laid out again and locked again"""
+        if start < 0 or end <= start: raise JizuraError('0 <= start < end の区間を指定してください')
+        if tone is not None and tone not in ('quiet', 'calm', 'normal'): raise JizuraError(f"tone は quiet・calm・normal のどれか: {tone}")
+        O = (await self.options())['lyric']
+        parts = {}
+        for k, v in (('layout', layout), ('enter', enter), ('exit', exit), ('hold', hold), ('cam', cam)):
+            if v is None: continue
+            if v != 'auto' and v not in O[k]: raise JizuraError(f'{k} は options の lyric.{k} のどれか（または auto）: {v}')
+            parts[k] = v
+        if size is not None and size != 'auto':
+            if not 0.2 <= float(size) <= 3: raise JizuraError(f'size は 0.2〜3: {size}')
+            size = float(size)
+        if tone is None and not parts and size is None: raise JizuraError('tone・部品・size のどれかを指定してください')
+        return await self._ev(JS_SET_RANGE_STYLE, {'start': float(start), 'end': float(end), 'tone': tone, 'parts': parts, 'size': size})
 
     async def set_word_times(self, text=None, path=None):
         """word times only (the lyrics and every setting stay): Suno aligned_words / WhisperX words / enhanced LRC / JSON lines that

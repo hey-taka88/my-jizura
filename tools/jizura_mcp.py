@@ -369,6 +369,23 @@ async def lock_motion_palette(start: float, end: float, lock: bool = True, schem
 
 @mcp.tool()
 @recorded
+async def set_range_style(start: float, end: float, tone: str = '', layout: str = '', enter: str = '', exit: str = '', hold: str = '',
+                          cam: str = '', size: float | str | None = None) -> dict:
+    """How strongly the lyrics move in a part of the song: every lyric line that plays in [start, end) seconds gets
+    tone 'quiet' — one cut, big and centred, soft blur in and out, a slow breath (a rest, e.g. a pre-chorus or bridge);
+    'calm' — JIZURA's own layout and cuts, but soft in and out and a slow drift; both without decorations, camera hits and screen
+    effects (shake / glitch / flash …); or 'normal' — back to automatic (also clears these parts set per line in the range).
+    layout / enter / exit / hold / cam (keys from options()['lyric'], 'auto' = automatic) set one part for the whole range on top;
+    size: 0.2 … 3 ('auto' = as laid out). Locked lines in the range are laid out again and locked again. Busy parts (a chorus) need
+    nothing: leave them to JIZURA. Check with get_motion_plan / preview; one line can still be changed with set_line_style.
+    Other lines may change too (JIZURA avoids repeating the parts used just before): lock_motion_palette the parts already adopted
+    first. Returns the lines (1 = first) and othersChanged (lines outside the range whose cuts changed)."""
+    return await call(lambda jz: jz.set_range_style(start, end, tone=tone or None, layout=layout or None, enter=enter or None,
+                                                    exit=exit or None, hold=hold or None, cam=cam or None, size=size))
+
+
+@mcp.tool()
+@recorded
 async def set_word_times(path: str) -> dict:
     """Add word times to the current lyrics without changing them (the lines, their settings and pictures stay): a file in the
     working folder with words and their times — Suno aligned_words JSON, WhisperX / Whisper words, enhanced LRC (<mm:ss.xx> tags) or

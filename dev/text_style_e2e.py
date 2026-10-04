@@ -7,7 +7,9 @@ usage: python3 build.py && python3 dev/text_style_e2e.py [--browser chromium]
   sung (a recap cut and cut times set by hand stay), the lowest alignment confidence is reported, save → open keeps them ·
   固定: a line with a recap cut keeps its cut times when locked (the app's lock alone moves them), through set_look and a restyle;
   unlocking in the app lets the kept times go, a cut time set by hand stays (also one changed after the lock) · colour / position /
-  size on a locked line keep its cut times (also after new word times), a layout change re-lays it · Whisper segments keep their words.
+  size on a locked line keep its cut times (also after new word times), a layout change re-lays it · Whisper segments keep their words ·
+  見せ方の強さ: set_range_style quiet / calm / normal on a range of seconds (one big centred cut, soft, no decorations or screen
+  effects; a part on top; size; a locked line stays locked; locked lines before it stay; save → open; the same plan twice).
 Exit code 0 = all checks passed."""
 import asyncio, json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
@@ -167,6 +169,45 @@ async def main():
         r = await jz.set_line_style(1, layout='vcols')
         ok(r['style'].get('lock') and all(c['layout'] == 'vcols' for c in r['cuts'] if c['text'] != 'ああいいうう') and r['cuts'][1]['start'] != st1[1],
            f"a layout change lays the line out again (with its word times) and re-locks it {[c['start'] for c in r['cuts']]}")
+        print('見せ方の強さ（set_range_style）')
+        lyr = '\n'.join(f'[00:{1 + 4 * i:02d}.00]{t}' for i, t in enumerate(['夜明けの色を/覚えてる', 'ほどけた声が/遠くで鳴った', '手を離す/まだ鳴ってる', 'ねえ/まだ間に合うかな', '名前のない/明日へ']))
+        await jz.new_project(lyrics=lyr); await jz.set_look(seed=11)
+        K = ['line', 'cut', 'start', 'end', 'text', 'layout', 'enter', 'exit', 'hold', 'cam', 'decor']
+        pickm = lambda m: [{k: c[k] for k in K} for c in m['cuts'] if not c['interlude']]
+        m0 = await jz.get_motion_plan(0, 30)
+        await jz.lock_motion_palette(0, 9)                                 # an adopted part stays as it is
+        r = await jz.set_range_style(9, 17, tone='quiet')
+        q = await jz.get_motion_plan(9, 17)
+        qc = [c for c in q['cuts'] if c['line'] in r['lines']]
+        ok(r['lines'] == [3, 4] and all(c['layout'] == 'center' and c['enter'] == 'blur' and c['exit'] == 'blur' and c['hold'] == 'breathe' and c['decor'] == []
+                                        and c['tone'] == 'quiet' for c in qc) and len(qc) == 2,
+           f"quiet: one big centred cut per line, soft in and out, a slow breath, no decorations {[(c['line'], c['layout'], c['enter'], c['hold']) for c in qc]}")
+        spans = await ev("() => [2, 3].map(li => { const cs = J.media.lineCuts(J.ui.plan, li); return [cs[0].start, cs[cs.length - 1].end]; })")
+        n_ev = await ev(f"() => J.ui.plan.events.filter(e => {json.dumps(spans)}.some(([a, b]) => e.t >= a - 0.05 && e.t < b)).length")
+        ok(n_ev == 0, f'… and no screen effects while they are on screen ({n_ev})')
+        m1 = await jz.get_motion_plan(0, 30)
+        ok([c for c in pickm(m1) if c['line'] <= 2] == [c for c in pickm(m0) if c['line'] <= 2], 'the locked lines before the range did not change')
+        ok(isinstance(r['othersChanged'], list) and not set(r['othersChanged']) & {1, 2, 3, 4}, f"lines outside the range that changed are reported ({r['othersChanged']})")
+        r = await jz.set_range_style(9, 17, tone='calm', size=1.3)
+        l3 = await jz.get_line(3)
+        ok(l3['tone'] == 'calm' and l3['place'] == {'scale': 1.3} and 'single' not in l3['style'] and l3['style'].get('hold') == 'drift' and l3['style'].get('decor') == [],
+           f"calm: its own cuts, slow drift, no decorations, bigger ({l3['style']}, {l3['place']})")
+        r = await jz.set_range_style(9, 17, hold='still')
+        ok((await jz.get_line(4))['style'].get('hold') == 'still' and (await jz.get_line(4))['tone'] == 'calm', 'one part on top of the tone')
+        same = await ev("() => { const a = JSON.stringify(J.plan(J.ui.project, null).cuts.map(c => [c.start, c.layout, c.enter, c.hold])); return a === JSON.stringify(J.plan(J.ui.project, null).cuts.map(c => [c.start, c.layout, c.enter, c.hold])); }")
+        ok(same, 'the same project gives the same plan')
+        await jz.set_line_style(4, lock=True)
+        r = await jz.set_range_style(9, 17, tone='quiet')
+        l4 = await jz.get_line(4)
+        ok(r['relocked'] == [4] and l4['style'].get('lock') and len(l4['cuts']) == 1 and l4['cuts'][0]['layout'] == 'center', f"a locked line in the range takes the tone and stays locked ({r})")
+        d2 = tempfile.mkdtemp(); p2 = os.path.join(d2, 't.jizura.json'); await jz.save_project(p2)
+        await jz.new_project(); await jz.open_project(p2)
+        ok((await jz.get_line(3))['tone'] == 'quiet' and (await jz.get_motion_plan(9, 17))['cuts'][0]['layout'] == 'center', 'save → open keeps the tone')
+        r = await jz.set_range_style(9, 17, tone='normal', size='auto')
+        l3 = await jz.get_line(3)
+        ok(l3['tone'] is None and l3['place'] == {} and not any(k in l3['style'] for k in ('single', 'layout', 'enter', 'hold', 'decor')), f"normal: back to automatic ({l3['style']})")
+        try: await jz.set_range_style(9, 17, tone='loud'); ok(False, 'an unknown tone is refused')
+        except Exception: ok(True, 'an unknown tone is refused')
         print('Whisper segments with words')
         seg = json.dumps({'segments': [{'start': 2.0, 'end': 5.0, 'text': ' 夜明けの 色を', 'words': [{'word': ' 夜明けの', 'start': 2.0, 'probability': 0.9}, {'word': ' 色を', 'start': 3.4, 'probability': 0.8}]},
                                        {'start': 6.0, 'end': 8.0, 'text': ' 覚えてる', 'words': [{'word': ' 覚えてる', 'start': 6.1}]}]}, ensure_ascii=False)
