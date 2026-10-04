@@ -250,6 +250,13 @@ J.mediaUI = {
   },
   onPlan() {
     if (!api || !$('mediaSec')) return;
+    // 「LRC を読み込む」 with word times (Suno / Whisper words, enhanced LRC): keep them once that text is the lyrics
+    const LI = J.lyricsImport;
+    if (LI && LI.last && String(S.project.lyrics || '').trim() === LI.last.text) {
+      const w = LI.last.words; LI.last = null;
+      const m = media(); m.text = Object.assign({}, m.text, { words: w });
+      S.project.media = M.normalize(m); api.replan(); return;
+    }
     if (S.project !== lastProject) { lastProject = S.project; listKey = ''; note(''); restore(); }   // another project was opened / reset
     syncControls(); renderList();
   },

@@ -110,8 +110,10 @@ JS_PLAN = r"""() => {
     song: S.audio ? { name: P.audioName, duration: r2(S.audio.duration), bpm: S.audio.bpm } : null,
     lines: plan.lines.map((ln, i) => {
       const c = mp ? J.media.cutAt(plan, ln.start + 0.001, 'back') : null;
+      const wt = J.media.lineWords(P.media, ln);
       return { line: i + 1, start: r2(ln.start), end: r2(ln.end), text: ln.text, media: c ? name(c.assetId) : null,
-        choice: own.has(i) ? (own.get(i) ? name(own.get(i)) : 'none') : 'auto' };
+        choice: own.has(i) ? (own.get(i) ? name(own.get(i)) : 'none') : 'auto',
+        words: wt ? wt.w.length : 0, confidence: wt && wt.p != null ? r2(wt.p) : null };   // word times (cuts follow the singing); lowest alignment confidence
     }),
     media: m.assets.map((a, i) => ({ n: i + 1, name: a.name, id: a.id, type: a.type, w: a.w, h: a.h, duration: a.duration, loaded: J.mediaAssets.has(a.id) })),
     mediaOptions: { auto: m.autoFill.back.mode === 'perLine', order: m.autoFill.back.order, hold: m.autoFill.back.hold, fit: m.autoFill.back.fit,
@@ -132,9 +134,14 @@ JS_SET_LYRICS = r"""([text, name]) => {
   // the same as 「LRC を読み込む」: line times, per-line settings and the export range belonged to the old lines
   P.lyrics = String(r.text).replace(/^﻿/, '').replace(/\r\n?/g, '\n').trim(); P.timing.lineTimes = {}; P.overrides = {}; P.exportRange = null;
   for (const k of J.media.TRACKS) P.media.tracks[k].cuts = P.media.tracks[k].cuts.filter(c => !c.lineRef);   // …and so did the per-line pictures
+  // word times (word lists / enhanced LRC): the cuts of a line change when their word is sung; none = the old ones go
+  P.media.text = Object.assign({}, P.media.text, { words: r.words || [] });
+  P.media = J.media.normalize(P.media);
+  if (J.lyricsImport) J.lyricsImport.last = null;
   const el = document.getElementById('lyrics'); if (el) el.value = P.lyrics;
   J.uiApi.syncUI(); J.uiApi.replan(); J.uiApi.flushSave();
-  return { kind: name ? r.kind : 'text', lines: S.plan.lines.length, timed: J.parseLyrics(P.lyrics).lines.filter(l => l.lrc != null).length };
+  return { kind: name ? r.kind : 'text', lines: S.plan.lines.length, timed: J.parseLyrics(P.lyrics).lines.filter(l => l.lrc != null).length,
+    wordTimed: S.plan.lines.filter(ln => J.media.lineWords(P.media, ln)).length };
 }"""
 
 JS_LOAD_SONG = r"""async () => {
@@ -177,7 +184,11 @@ JS_LINE = r"""(li) => {
   const style = {};
   for (const k of ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime', 'cutTech', 'lock']) if (ov[k] != null) style[k] = ov[k];
   if (style.cutTime) style.cutTime = Object.keys(style.cutTime).sort((a, b) => a - b).map(k => style.cutTime[k]);
+  const wt = J.media.lineWords(P.media, ln);
   return { line: li + 1, text: ln.text, start: r2(ln.start), end: r2(ln.end), interlude: !!ln.interlude, style, place: T,
+    words: wt ? wt.w.map(([t, off]) => ({ t: r2(t), at: off, text: [...J.media.normText(ln.text)].slice(off, (wt.w.find(x => x[1] > off) || [0, 9999])[1]).join('') })) : [],
+    confidence: wt && wt.p != null ? r2(wt.p) : null,
+    cutTimes: style.cutTime ? 'by hand' : wt ? 'words' : 'auto',
     cuts: J.media.lineCuts(S.plan, li).map((c, k) => ({ cut: k + 1, text: c.utext, start: r2(c.start), end: r2(c.end), layout: c.layout,
       enter: c.enter, exit: c.exit, hold: c.hold, cam: c.cam === 'place' ? (c.camP || {}).base : c.cam, bg: c.bg, decor: (c.decor || []).map(d => d.id),
       treat: c.treat, trans: c.trans || null, color: (S.plan.style.schemes[c.scheme] || {}).fg })) };
