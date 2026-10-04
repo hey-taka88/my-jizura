@@ -320,7 +320,8 @@ async def set_line_style(line: int, cut: int | None = None, layout: str = '', en
     decor: list of decoration keys ([] or 'none' = none; one at most with `cut`). With `cut`, bg and decor apply to that cut. cuts: split the line
     into that many cuts; cut_times: when cuts 2, 3 … start, in seconds from the line start (e.g. the second phrase); single: one cut.
     x / y: move the lyric (-0.5 … 0.5 of the frame; y < 0 = up), size: 0.2 … 3 (1 = as laid out), color: '#rrggbb' text colour.
-    lock: keep exactly this look when other lines are changed or set_look runs. reset: clear everything set for the line.
+    lock: keep exactly this look (and its cut times) when other lines are changed or set_look runs. On a locked line x / y / size /
+    color keep its cuts and cut times; the other parts lay the line out again and re-lock it. reset: clear everything set for the line.
     Empty = unchanged. Check the result with preview at a time inside the line. Returns the line as get_line."""
     return await call(lambda jz: jz.set_line_style(int(line), cut=cut, layout=layout or None, enter=enter or None, exit=exit or None,
                                                     hold=hold or None, cam=cam or None, trans=trans or None, bg=bg or None, decor=decor,

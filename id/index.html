@@ -5475,9 +5475,14 @@ M.normalizeText = t => {
   for (const [k, v] of Object.entries(isObj(t.lines) ? t.lines : {}).slice(0, 5000)) {
     if (!/^\d{1,5}$/.test(k) || !isObj(v)) continue;
     const o = one(v), cuts = {};
-    // the overrides cutTime entries M.lockLine added (cleared again on unlock; cut times set by hand stay)
-    const held = Array.isArray(v.heldTimes) ? [...new Set(v.heldTimes.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12))].sort((a, b) => a - b) : [];
-    if (held.length) o.heldTimes = held;
+    // the overrides cutTime entries M.lockLine added, with the value it wrote ({ cut key: seconds }): unlocking clears an
+    // entry only while it still has that value (a time changed by hand afterwards stays)
+    const held = {};
+    for (const [hk, hv] of Object.entries(isObj(v.heldTimes) ? v.heldTimes : {}).slice(0, 12)) {
+      const n = num(hv, 0, 3600);
+      if (/^\d{1,2}$/.test(hk) && +hk >= 1 && n != null) held[+hk] = n;
+    }
+    if (Object.keys(held).length) o.heldTimes = held;
     for (const [ck, cv] of Object.entries(isObj(v.cuts) ? v.cuts : {}).slice(0, 12)) {
       if (!/^\d{1,2}$/.test(ck) || !isObj(cv)) continue;
       const c = one(cv); if (Object.keys(c).length) cuts[ck] = c;
@@ -5568,7 +5573,7 @@ M.alignWords = (m, plan, project) => {
 
 /* 固定 (the app's line lock, as its lock button does) + the cut times the line shows: J.lineSnapshot alone lets a line
    with a recap cut move its cut starts (the planner weighs a locked recap cut by its text length, not as it first did),
-   so the times are kept as overrides cutTime too (beside any set by hand), the added ones listed in heldTimes (M.unlockLine).
+   so the times are kept as overrides cutTime too (beside any set by hand), the added ones with their value in heldTimes (M.unlockLine).
    scheme: pin every cut of the line to this colour scheme. Returns false for an interlude or a line not in the plan. */
 M.lockLine = (project, plan, li, scheme) => {
   const ln = plan.lines[li], spec = ln && !ln.interlude ? J.lineSnapshot(plan, li) : null;
@@ -5577,26 +5582,25 @@ M.lockLine = (project, plan, li, scheme) => {
   const ov = Object.assign({}, (project.overrides = project.overrides || {})[li] || {}, { lock: true, lockedSeed: ln.seed, lockedCuts: spec });
   const cuts = M.lineCuts(plan, li);
   if (cuts.length > 1 && project.media) {
-    const ct = Object.assign({}, ov.cutTime || {}), added = [];
-    cuts.slice(1).forEach((c, k) => { if (ct[k + 1] == null) { ct[k + 1] = c.start - ln.start; added.push(k + 1); } });
+    const ct = Object.assign({}, ov.cutTime || {});
+    const lines = Object.assign({}, project.media.text.lines), L = Object.assign({}, lines[li] || {}), held = Object.assign({}, L.heldTimes || {});
+    cuts.slice(1).forEach((c, k) => { if (ct[k + 1] == null) { ct[k + 1] = held[k + 1] = c.start - ln.start; } });
     ov.cutTime = ct;
-    const lines = Object.assign({}, project.media.text.lines), L = Object.assign({}, lines[li] || {});
-    const held = [...new Set([...(L.heldTimes || []), ...added])].sort((a, b) => a - b);
-    if (held.length) L.heldTimes = held;
+    if (Object.keys(held).length) L.heldTimes = held;
     if (Object.keys(L).length) lines[li] = L;
     project.media.text = Object.assign({}, project.media.text, { lines });
   }
   project.overrides[li] = ov;
   return true;
 };
-/* the other way: lock off, and the cut times M.lockLine kept go too (cut times set by hand stay) */
+/* the other way: lock off, and the cut times M.lockLine kept go too (cut times set by hand stay, also one changed after the lock) */
 M.unlockLine = (project, li) => {
   const ov = Object.assign({}, (project.overrides || {})[li] || {});
   delete ov.lock; delete ov.lockedSeed; delete ov.lockedCuts;
   const L = project.media && project.media.text.lines[li];
   if (L && L.heldTimes) {
     const ct = Object.assign({}, ov.cutTime || {});
-    for (const k of L.heldTimes) delete ct[k];
+    for (const [k, v] of Object.entries(L.heldTimes)) if (ct[k] != null && Math.abs(+ct[k] - v) < 1e-6) delete ct[k];
     if (Object.keys(ct).length) ov.cutTime = ct; else delete ov.cutTime;
     const lines = Object.assign({}, project.media.text.lines), L2 = Object.assign({}, L);
     delete L2.heldTimes;
@@ -5637,7 +5641,7 @@ M.applyText = (m, plan, project) => {
         const P0 = c.cam === 'place' ? c.camP || {} : null;
         c.camP = { x: spec.x || 0, y: spec.y || 0, s: spec.scale || 1, base: P0 ? P0.base : c.cam, baseP: P0 ? P0.baseP : c.camP };
         c.cam = 'place';
-      }
+      } else if (c.cam === 'place' && c.camP) { c.cam = c.camP.base; c.camP = c.camP.baseP || {}; }   // placement cleared on a locked line
       if (spec.color) c.scheme = n0 + colors.indexOf(spec.color) * n0 + ((c.scheme | 0) % n0);
     });
   }

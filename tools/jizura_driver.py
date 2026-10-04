@@ -191,7 +191,7 @@ JS_LINE = r"""(li) => {
     words: wt ? wt.w.map(x => ({ t: r2(x[0]), at: x[1], text: [...J.media.normText(ln.text)].slice(x[1], (wt.w.find(y => y[1] > x[1]) || [0, 9999])[1]).join(''),
       p: x[2] != null ? r2(x[2]) : null, used: J.media.usableWord(x, ln) })) : [],
     confidence: wt && wt.p != null ? r2(wt.p) : null,
-    cutTimes: style.cutTime ? (Object.keys(ov.cutTime).every(k => (T.heldTimes || []).includes(+k)) ? 'locked' : 'by hand') : wt ? 'words' : 'auto',
+    cutTimes: style.cutTime ? (Object.keys(ov.cutTime).every(k => T.heldTimes && T.heldTimes[k] != null && Math.abs(ov.cutTime[k] - T.heldTimes[k]) < 1e-6) ? 'locked' : 'by hand') : wt ? 'words' : 'auto',
     cuts: J.media.lineCuts(S.plan, li).map((c, k) => ({ cut: k + 1, text: c.utext, start: r2(c.start), end: r2(c.end), layout: c.layout,
       enter: c.enter, exit: c.exit, hold: c.hold, cam: c.cam === 'place' ? (c.camP || {}).base : c.cam, bg: c.bg, decor: (c.decor || []).map(d => d.id),
       treat: c.treat, trans: c.trans || null, color: (S.plan.style.schemes[c.scheme] || {}).fg, sung: c.sungAt != null ? r2(c.sungAt) : null })) };
@@ -200,7 +200,11 @@ JS_LINE = r"""(li) => {
 JS_SET_LINE_STYLE = r"""(o) => {
   const S = J.ui, P = S.project, li = o.li;
   const wasLocked = !!(P.overrides[li] || {}).lock;
-  J.media.unlockLine(P, li);                     // re-locked below with the new look (the cut times a lock kept go too)
+  // only placement / size / colour: a locked line stays locked as it is (same cuts, same cut times) — anything that changes the
+  // cuts themselves unlocks it, lays it out again and re-locks it with the new look (the cut times its lock kept go too)
+  const structural = !!o.reset || ['layout', 'enter', 'exit', 'hold', 'cam', 'trans', 'bg', 'treat', 'cuts', 'single', 'decor', 'cutTime'].some(k => o[k] !== undefined);
+  const keepLock = wasLocked && !structural && o.lock !== false;
+  if (!keepLock) J.media.unlockLine(P, li);
   const m = P.media, ov = Object.assign({}, P.overrides[li] || {});
   const put = (obj, k, v) => { if (v === undefined) return; if (v === null || v === 'auto') delete obj[k]; else obj[k] = v; };
   if (o.cut == null) {
@@ -223,7 +227,7 @@ JS_SET_LINE_STYLE = r"""(o) => {
   if (Object.keys(ov).length) P.overrides[li] = ov; else delete P.overrides[li];
   J.uiApi.replan();
   // 固定: the line keeps exactly this look when other lines are rolled again (the app's line lock)
-  if (o.lock === true || (o.lock == null && wasLocked && !o.reset)) {
+  if (!keepLock && (o.lock === true || (o.lock == null && wasLocked && !o.reset))) {
     if (J.media.lockLine(P, S.plan, li)) J.uiApi.replan();
   }
   J.uiApi.flushSave();
@@ -581,7 +585,8 @@ class Jizura:
         'auto' = back to automatic.
         cuts: how many cuts the line is split into; cut_times: when cuts 2, 3 … start (seconds from the line start); single: one cut.
         x / y: move the lyric (-0.5 … 0.5 of the frame), size: 0.2 … 3, color: '#rrggbb' text colour.
-        lock: keep exactly this look when other lines change (a locked line is re-locked after a change). reset: clear everything"""
+        lock: keep exactly this look and its cut times when other lines change. On a locked line, x / y / size / color keep its cuts and
+        cut times; other changes lay it out again and re-lock it. reset: clear everything"""
         li = await self._line_index(line)
         O = (await self.options())['lyric']
         o = {'li': li}
