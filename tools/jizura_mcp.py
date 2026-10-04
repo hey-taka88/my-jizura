@@ -301,7 +301,9 @@ async def remove_timed_media(id: str = 'all') -> dict:
 async def get_line(line: int) -> dict:
     """One lyric line (1 = first, as in get_plan): its text and time, its own settings (style = layout / motion / decorations / cut times
     set by hand, place = position / size / colour) and every cut it became, with the parts actually used (layout, enter, exit, hold,
-    cam, bg, decor, treat, trans, text colour)."""
+    cam, bg, decor, treat, trans, text colour). words: its word times (t, the text from there, p = confidence, used = whether the
+    time is used for cut starts); confidence: the lowest one; cutTimes: how the cut starts were decided —
+    'by hand' (cut_times) > 'locked' (kept by a lock) > 'words' (word times) > 'auto' (by text length)."""
     return await call(lambda jz: jz.get_line(int(line)))
 
 
@@ -332,6 +334,50 @@ async def set_text_options(interlude_title: bool | None = None) -> dict:
     """interlude_title: show the song title / artist on long interludes (default true). The title stays in the project (and in
     get_plan) either way — this only decides whether the wordless interlude shows it."""
     return await call(lambda jz: jz.set_text_options(interlude_title=interlude_title))
+
+
+@mcp.tool()
+@recorded
+async def get_motion_plan(start: float = 0, end: float | None = None) -> dict:
+    """The cuts the app actually made in [start, end) seconds of the song (end empty = to the end), read-only: for each cut its
+    line (1 = first, as in get_plan / get_line) and cut number in the line, time, text, recap (the whole line again), layout,
+    enter / exit / hold, treat, cam, trans, bg, decor, params, colour scheme, inDur / outDur, seed and whether the line is locked;
+    plus `inventory` (which layouts / motions / cameras the range uses). Use it to compare candidates (set_look variation / seed)
+    and to check that a locked range did not change. Nothing in the project changes."""
+    return await call(lambda jz: jz.get_motion_plan(start, end))
+
+
+@mcp.tool()
+@recorded
+async def lock_motion_palette(start: float, end: float, lock: bool = True, scheme: int | None = None, bg_color: str = '',
+                              text_color: str = '', sub_color: str = '', accent_color: str = '', ghost_a: str = '', ghost_b: str = '',
+                              chroma: float | None = None) -> dict:
+    """Keep an adopted range: every lyric line that plays in [start, end) seconds is locked (固定) with exactly the cuts, motion,
+    decorations and cut times it shows now — later set_look / set_line_style on other lines does not change it (lock=false lets the
+    range go again; cut times set by hand stay). Lines with word times keep the word-timed cut starts they show.
+    scheme: pin the range's cuts to this colour scheme of the style (0 = main).
+    Colours ('#rrggbb') and chroma (0-1) are the PROJECT's, for every line, as in the 配色 panel: bg_color / text_color / sub_color
+    replace scheme 0 (given one, scheme defaults to 0 so the range shows them), accent_color / ghost_a / ghost_b apply to every scheme.
+    Empty colours = unchanged. For one line's own text colour use set_line_style(color=…).
+    Returns the lines (1 = first) and what changed project-wide (`global`)."""
+    return await call(lambda jz: jz.lock_motion_palette(start, end, lock=lock, scheme=scheme, bg_color=bg_color or None,
+                                                        text_color=text_color or None, sub_color=sub_color or None,
+                                                        accent_color=accent_color or None, ghost_a=ghost_a or None, ghost_b=ghost_b or None,
+                                                        chroma=chroma))
+
+
+@mcp.tool()
+@recorded
+async def set_word_times(path: str) -> dict:
+    """Add word times to the current lyrics without changing them (the lines, their settings and pictures stay): a file in the
+    working folder with words and their times — Suno aligned_words JSON, WhisperX / Whisper words, enhanced LRC (<mm:ss.xx> tags) or
+    JSON lines that carry their own words ({"lines": [{"text", "start", "words": [{"word", "start", "probability"}]}]}, e.g. a
+    timing master). Each lyric line takes the entry with the same text that starts nearest to it; its cuts then change when their
+    first word is sung (cut times set by hand or kept by a lock win). Words below confidence 0.1 or outside their line are not used.
+    Returns wordTimed (lines with word times), without (lines with none), unmatched (entries no line took: text that differs from
+    the lyrics) and weak (lines with unused words). Correct a time in the file and call again to apply it."""
+    p = inside(path)
+    return await call(lambda jz: jz.set_word_times(path=p))
 
 
 @mcp.tool()

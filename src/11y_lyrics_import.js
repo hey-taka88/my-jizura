@@ -5,12 +5,14 @@
      · LRC (also "enhanced" LRC: inline <mm:ss.xx> word tags are dropped)
      · SRT and WebVTT subtitles (one cue = one line; extra text lines of a cue follow without a time)
      · JSON: Whisper / faster-whisper (segments[].start/end/text), word lists (Suno aligned words
-       { word, start_s }, WhisperX / whisper words { word, start }), or simple [{ start|time, text }]
+       { word, start_s }, WhisperX / whisper words { word, start }), or simple [{ start|time, text }];
+       lines and segments may carry their own words ({ lines: [{ text, start, words: [{ word, start, probability }] }] })
    Section headers such as [Verse] [Chorus] become a blank line (a new part); [Instrumental] / [間奏] stay.
    12_ui.js calls J.lyricsImport.toLrc(text, fileName) in the 「LRC を読み込む」 handler.
-   Word times (word lists, enhanced LRC) are kept too: toLrc(...).words = [{ text, start, w: [[seconds, offset], …], p }] —
-   one entry per lyric line, offset = where the word starts in the line counted as J.media.normText counts (no spaces / marks),
-   p = the lowest alignment confidence of its words (Suno p_align, Whisper probability) when the source has one.
+   Word times (word lists, enhanced LRC, lines / segments that carry their own words) are kept too:
+   toLrc(...).words = [{ text, start, w: [[seconds, offset, p?], …], p }] — one entry per lyric line,
+   offset = where the word starts in the line counted as J.media.normText counts (no spaces / marks),
+   p = the alignment confidence of the word / the lowest one of the line (Suno p_align, Whisper probability) when the source has one.
    They let the cuts inside a line change when the word is sung (08m_media_text.js).
    ============================================================ */
 (() => {
@@ -97,7 +99,7 @@ function fromWords(words, keep) {
       for (const tag of tags) { if (INTERLUDE.test(tag)) { flush(); out.push(stamp(st) + '[間奏]'); } else blank(); p = p.replace(tag, ''); }
       if (!p.trim()) return;
       if (t0 == null) t0 = st;
-      ws.push([st, normLen(cur)]);                           // this word starts here in the line
+      ws.push(w.p != null ? [st, normLen(cur), w.p] : [st, normLen(cur)]);   // this word starts here in the line
       if (w.p != null) pmin = pmin == null ? w.p : Math.min(pmin, w.p);
       cur += p;
     });
@@ -115,28 +117,41 @@ const wordOf = w => ({ text: w.word != null ? w.word : w.text != null ? w.text :
 function fromJson(data, keep) {
   if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     if (data.some(x => x && (x.word != null || x.start_s != null))) return { text: fromWords(data.map(wordOf), keep), kind: 'words' };
-    if (data.some(x => x && x.text != null && (x.start != null || x.time != null || x.startTime != null))) return { text: lineList(data), kind: 'lines' };
+    if (data.some(x => x && x.text != null && (x.start != null || x.time != null || x.startTime != null))) return { text: lineList(data, keep), kind: 'lines' };
   }
   if (data && typeof data === 'object') {
     if (Array.isArray(data.aligned_words)) return { text: fromWords(data.aligned_words.map(wordOf), keep), kind: 'words' };
     if (Array.isArray(data.segments) && data.segments.length) {
-      if (data.segments.some(s => s && s.text != null && s.text.trim())) return { text: lineList(data.segments), kind: 'segments' };
+      if (data.segments.some(s => s && s.text != null && s.text.trim())) return { text: lineList(data.segments, keep), kind: 'segments' };
       const ws = [].concat(...data.segments.map(s => (s && Array.isArray(s.words) ? s.words : [])));
       if (ws.length) return { text: fromWords(ws.map(wordOf), keep), kind: 'words' };
     }
     if (Array.isArray(data.words)) return { text: fromWords(data.words.map(wordOf), keep), kind: 'words' };
-    if (Array.isArray(data.lines)) return { text: lineList(data.lines), kind: 'lines' };
+    if (Array.isArray(data.lines)) return { text: lineList(data.lines, keep), kind: 'lines' };
     for (const k of ['data', 'result', 'results', 'lyrics']) if (data[k] && typeof data[k] === 'object') { const r = fromJson(data[k], keep); if (r) return r; }
   }
   return null;
 }
-function lineList(items) {
+// the text of a line as J.media.normText counts it (to check that the words of a line spell the line)
+const normStr = s => [...clean(s).replace(/[\s/*]/g, '')].join('');
+function lineList(items, keep) {
   const out = [];
   for (const it of items) {
     if (!it) continue;
     const t = num(it.start != null ? it.start : it.time != null ? it.time : it.startTime != null ? it.startTime : it.start_s);
     const rows = String(it.text == null ? '' : it.text).split('\n').map(clean).filter(Boolean);
     rows.forEach((l, k) => out.push(row(k === 0 && t != null ? stamp(t) : '', l)));
+    // a line / segment with its own words (WhisperX segments, aligned lyric sheets): kept when the words spell the line
+    if (keep && t != null && rows.length === 1 && !isSection(rows[0]) && !INTERLUDE.test(rows[0]) && Array.isArray(it.words) && it.words.length) {
+      const w = []; let acc = '', pmin = null;
+      for (const x of it.words.map(wordOf)) {
+        const txt = String(x.text == null ? '' : x.text);
+        if (x.start != null && normStr(txt)) w.push(x.p != null ? [x.start, normLen(acc), x.p] : [x.start, normLen(acc)]);
+        if (x.p != null) pmin = pmin == null ? x.p : Math.min(pmin, x.p);
+        acc += txt;
+      }
+      if (w.length && normStr(acc) === normStr(rows[0])) keep.push({ text: rows[0], start: t, w, p: pmin });
+    }
   }
   return out.join('\n');
 }

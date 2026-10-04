@@ -9,7 +9,9 @@ Makes a working folder with a generated song (WAV), Suno-style timed lyrics and 
   shows, it comes back after save → open · open_project names the pictures that are not loaded · set_output 9:16 ·
   set_line_style: a phrase starts at its own time, a big centred line / a line moved up / a short vertical line come back the same
   (get_line and the same preview image) after save → open, a locked line survives set_look · relink_media in a fresh project ·
-  the interlude title can be left out while the title stays · 制作の記録: run.json / calls.jsonl / previews / projects match what
+  the interlude title can be left out while the title stays · get_motion_plan changes nothing · lock_motion_palette keeps a range
+  (cut times included) through set_look, its colours are reported as the project's, lock=false lets it go · set_word_times from
+  a timing sheet (lines with words) moves a phrase to its sung time without touching the lyrics · 制作の記録: run.json / calls.jsonl / previews / projects match what
   happened (inputs and outputs with their sha256, time in and between tools, notes, refused calls).
 Exit code 0 = all checks passed. Needs: pip install mcp (1.x or 2.x)."""
 import asyncio, base64, datetime, inspect, io, json, math, os, struct, sys, tempfile, wave
@@ -23,7 +25,7 @@ KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
          'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4',
          'add_timed_media', 'remove_timed_media', 'get_line', 'set_line_style', 'set_text_options', 'relink_media',
-         'log_note', 'run_info', 'start_run'}
+         'log_note', 'run_info', 'start_run', 'get_motion_plan', 'lock_motion_palette', 'set_word_times'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -47,6 +49,11 @@ def make_inputs(d):
         for k, ch in enumerate([line[:len(line) // 2], line[len(line) // 2:] + '\n']):
             words.append({'word': ch, 'start_s': t0 + k * 1.2, 'end_s': t0 + k * 1.2 + 1.1})
     json.dump({'aligned_words': words}, open(os.path.join(d, 'suno.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+    # a timing sheet: lines that carry their own words (as a forced-alignment tool writes them)
+    sheet = {'lines': [{'text': '西日を飲んだ/硝子の向こう', 'start': 17.0, 'end': 21.0, 'words': [
+        {'word': '西日を', 'start': 17.0, 'end': 17.5, 'probability': 0.9}, {'word': '飲んだ', 'start': 17.6, 'end': 18.2, 'probability': 0.8},
+        {'word': '硝子の', 'start': 18.0, 'end': 18.6, 'probability': 0.85}, {'word': '向こう', 'start': 18.7, 'end': 20.6, 'probability': 0.05}]}]}
+    json.dump(sheet, open(os.path.join(d, 'timing_master.json'), 'w', encoding='utf-8'), ensure_ascii=False)
 
 
 async def main():
@@ -78,7 +85,7 @@ async def main():
             ok(TOOLS <= names, f'all tools are listed ({len(names)}; missing {sorted(TOOLS - names)})')
             st = await call('status'); print('  browser:', st['browser'], '· H.264 encode', st['h264Encode'], '· decode', st['h264Decode'])
             f = await call('list_files')
-            ok(f['songs'] == ['song.wav'] and f['lyrics'] == ['suno.json'] and f['folders'] == ['pics'], f'list_files: {f}')
+            ok(f['songs'] == ['song.wav'] and f['lyrics'] == ['suno.json', 'timing_master.json'] and f['folders'] == ['pics'], f'list_files: {f}')
             await call('new_project', {'title': 'テスト', 'artist': 'me'})
             r = await call('set_lyrics', {'path': 'suno.json'})
             ok(r['lines'] == 4 and r['timed'] == 4 and r['kind'] == 'words', f'Suno words → 4 timed lines ({r})')
@@ -191,6 +198,35 @@ async def main():
             ok([(c['layout'], c['enter']) for c in r['cuts']] == locked and r['place'] == {'y': -0.3, 'color': '#ffcc33'}, f'a locked line keeps its look when set_look runs {locked}')
             r = await call('set_line_style', {'line': 1, 'decor': 'auto', 'size': 'auto', 'cuts': 'auto', 'cut_times': 'auto'})
             ok(r['place'] == {} and 'decor' not in r['style'], f"'auto' passes the MCP schema and clears decor / size ({r['place']}, {r['style']})")
+            print('motion plan / lock / word times')
+            KEEPK = ['line', 'cut', 'start', 'end', 'text', 'layout', 'enter', 'exit', 'hold', 'treat', 'cam', 'inDur', 'outDur']
+            pick = lambda m: [{k: c[k] for k in KEEPK} for c in m['cuts'] if not c['interlude']]
+            plan0 = await call('get_plan')
+            m0 = await call('get_motion_plan', {'start': 0, 'end': 30})
+            ok(await call('get_plan') == plan0 and m0['cutCount'] == len(m0['cuts']) > 4 and m0['inventory']['layout'] and min(c['line'] for c in m0['cuts']) == 1,
+               f"get_motion_plan reads the cuts (lines from 1) and changes nothing ({m0['cutCount']} cuts)")
+            err, msg = await call('get_motion_plan', {'start': 5, 'end': 2}, expect_error=True)
+            ok(err, 'a backwards range is refused')
+            await call('set_line_style', {'line': 4, 'lock': False})        # (locked above: a locked line keeps its cut times)
+            r = await call('set_word_times', {'path': 'timing_master.json'})
+            l4 = await call('get_line', {'line': 4})
+            ok(r['wordTimed'] == 1 and dict((c['text'], c['start']) for c in l4['cuts']).get('硝子の向こう') == 18.0 and l4['cutTimes'] == 'words'
+               and [w['used'] for w in l4['words']] == [True, True, True, False] and r['weak'][0]['unused'] == 1,
+               f"set_word_times: the phrase starts when it is sung, a word below 0.1 is not used {[(c['text'], c['start']) for c in l4['cuts']]}")
+            ok([l['text'] for l in (await call('get_plan'))['lines']] == [l['text'] for l in plan0['lines']], '… and the lyrics are not touched')
+            m1 = await call('get_motion_plan', {'start': 0, 'end': 30})
+            r = await call('lock_motion_palette', {'start': 0, 'end': 30, 'text_color': '#223344', 'chroma': 0.2})
+            ok(r['lines'] == [1, 2, 4, 5] and r['scheme'] == 0 and set(r['global']) == {'fg', 'chroma'} and r['colors']['fg'] == '#223344',
+               f"lock_motion_palette locks the lines of the range; colours / chroma are reported as the project's {r}")
+            await call('set_look', {'variation': 3})
+            m2 = await call('get_motion_plan', {'start': 0, 'end': 30})
+            ok(pick(m2) == pick(m1) and all(c['locked'] for c in m2['cuts'] if not c['interlude']), 'the locked range keeps its cuts, motion and cut times through set_look'
+               + ''.join(f"\n        {a} → {b}" for a, b in zip(pick(m1), pick(m2)) if a != b))
+            l4 = await call('get_line', {'line': 4})
+            ok(l4['cutTimes'] == 'by hand' or l4['cutTimes'] == 'locked', f"a locked line reports its cut times as kept ({l4['cutTimes']})")
+            await call('lock_motion_palette', {'start': 0, 'end': 30, 'lock': False})
+            l4 = await call('get_line', {'line': 4})
+            ok('lock' not in l4['style'] and l4['cutTimes'] == 'words', f"lock=false lets the range go (word times again: {l4['cutTimes']})")
             print('interlude title')
             ok(p6['title'] == 'あの日の青', 'the title is in the project')
             t_on = md5(await call('preview', {'times': [13.0], 'width': 320}))
@@ -245,6 +281,9 @@ async def main():
             ok(all(c.get('project') for c in pv) and all(os.path.isfile(os.path.join(d, P['file'])) for P in run['projects'] if P['file']) and any(P['file'] for P in run['projects']),
                f"previews and exports name the project state they came from ({len(run['projects'])} states)")
             ok(any(e['tool'] == 'set_line_style' for e in run['errors']) and run['notes'][-1]['text'] == '12 秒で文字が上で切れた', 'refused calls and notes are in it')
+            ph = {c['tool']: c['phase'] for c in calls}
+            ok(ph.get('get_motion_plan') == 'check' and ph.get('lock_motion_palette') == 'edit' and ph.get('set_word_times') == 'edit' and 'timing_master.json' in ins,
+               f"the new tools are recorded in their phase {[(k, ph.get(k)) for k in ('get_motion_plan', 'lock_motion_palette', 'set_word_times')]}")
             r = await call('start_run', {'title': '次の曲'})
             ok(r['dir'] != info['dir'] and '次の曲' in r['dir'] and os.path.isfile(os.path.join(d, r['dir'], 'run.json')), f"start_run opens a new record ({r['dir']})")
             st = await call('status')

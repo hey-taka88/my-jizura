@@ -257,6 +257,9 @@ J.mediaUI = {
       const m = media(); m.text = Object.assign({}, m.text, { words: w });
       S.project.media = M.normalize(m); api.replan(); return;
     }
+    // a line unlocked with the app's lock button lets go of the cut times its lock kept (M.lockLine)
+    const held = Object.keys(media().text.lines).filter(k => media().text.lines[k].heldTimes && !((S.project.overrides || {})[k] || {}).lock);
+    if (held.length) { for (const k of held) M.unlockLine(S.project, k); api.replan(); return; }
     if (S.project !== lastProject) { lastProject = S.project; listKey = ''; note(''); restore(); }   // another project was opened / reset
     syncControls(); renderList();
   },

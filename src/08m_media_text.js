@@ -44,6 +44,9 @@ M.normalizeText = t => {
   for (const [k, v] of Object.entries(isObj(t.lines) ? t.lines : {}).slice(0, 5000)) {
     if (!/^\d{1,5}$/.test(k) || !isObj(v)) continue;
     const o = one(v), cuts = {};
+    // the overrides cutTime entries M.lockLine added (cleared again on unlock; cut times set by hand stay)
+    const held = Array.isArray(v.heldTimes) ? [...new Set(v.heldTimes.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12))].sort((a, b) => a - b) : [];
+    if (held.length) o.heldTimes = held;
     for (const [ck, cv] of Object.entries(isObj(v.cuts) ? v.cuts : {}).slice(0, 12)) {
       if (!/^\d{1,2}$/.test(ck) || !isObj(cv)) continue;
       const c = one(cv); if (Object.keys(c).length) cuts[ck] = c;
@@ -52,15 +55,15 @@ M.normalizeText = t => {
     if (Object.keys(o).length) d.lines[k] = o;
   }
   d.interludeTitle = t.interludeTitle === 'hide' ? 'hide' : 'show';
-  // word times: [{ text, start, w: [[t, offset]…] (in time order), p }]
+  // word times: [{ text, start, w: [[t, offset, p?]…] (in time order), p }]
   for (const e of (Array.isArray(t.words) ? t.words : []).slice(0, 3000)) {
     if (!isObj(e) || typeof e.text !== 'string' || !Array.isArray(e.w)) continue;
     const text = M.normText(e.text).slice(0, 500), start = num(e.start, 0, 86400);
     const w = [];
     for (const x of e.w.slice(0, 400)) {
       if (!Array.isArray(x)) continue;
-      const tt = num(x[0], 0, 86400), off = num(x[1], 0, 500);
-      if (tt != null && off != null && (!w.length || (tt >= w[w.length - 1][0] && off >= w[w.length - 1][1]))) w.push([tt, Math.round(off)]);
+      const tt = num(x[0], 0, 86400), off = num(x[1], 0, 500), pw = num(x[2], 0, 1);
+      if (tt != null && off != null && (!w.length || (tt >= w[w.length - 1][0] && off >= w[w.length - 1][1]))) w.push(pw != null ? [tt, Math.round(off), pw] : [tt, Math.round(off)]);
     }
     if (!text || !w.length) continue;
     const o = { text, start: start != null ? start : w[0][0], w };
@@ -91,6 +94,10 @@ function timeAt(w, off) {
   if (w[k][1] === off || k + 1 >= w.length) return w[k][1] === off ? w[k][0] : null;
   return w[k][0] + (w[k + 1][0] - w[k][0]) * (off - w[k][1]) / Math.max(1, w[k + 1][1] - w[k][1]);
 }
+/* the words of a line whose time is believable: confidence ≥ WEAK_WORD (when the source gives one) and inside the line
+   (a little before its start is fine) — the others are left out, so a cut start falls between the believable words around it */
+M.WEAK_WORD = 0.1;
+M.usableWord = (x, ln) => (x[2] == null || x[2] >= M.WEAK_WORD) && x[0] >= ln.start - 0.3 && x[0] <= Math.max(ln.end, ln.visEnd || 0) + 0.3;
 /* 語の時刻: the cuts inside a line change when their first word is sung (not by how long their text is).
    A line whose cut times were set by hand (overrides cutTime) keeps them; a recap cut (the whole line again) keeps its place. */
 M.alignWords = (m, plan, project) => {
@@ -104,7 +111,7 @@ M.alignWords = (m, plan, project) => {
     if (!e) return;
     const cuts = M.lineCuts(plan, li).filter(c => !c.recap);
     if (cuts.length < 2) return;
-    const full = M.normText(ln.text);
+    const full = M.normText(ln.text), ws = e.w.filter(x => M.usableWord(x, ln));
     let cursor = 0;
     for (let k = 0; k < cuts.length; k++) {
       const piece = M.normText(cuts[k].utext);
@@ -113,8 +120,9 @@ M.alignWords = (m, plan, project) => {
       cuts[k]._off = [...full.slice(0, at)].length; cursor = at + piece.length;
     }
     for (let k = 1; k < cuts.length; k++) {
-      const prev = cuts[k - 1], c = cuts[k], t = timeAt(e.w, c._off);
+      const prev = cuts[k - 1], c = cuts[k], t = timeAt(ws, c._off);
       if (t == null) continue;
+      c.sungAt = t;                                        // when it is sung (get_line shows it: a line shown shorter than it is sung can't follow)
       const T = J.clamp(t, prev.start + 0.22, c.end - 0.22);    // the same 0.22 s the planner keeps between cut starts
       if (!(T > prev.start && T < c.end)) continue;
       prev.end = T; c.start = T;
@@ -125,6 +133,46 @@ M.alignWords = (m, plan, project) => {
       c.inDur = Math.min(c.inDur, c.dur * 0.45); c.outDur = Math.min(c.outDur, c.dur * 0.45);
     }
   });
+};
+
+/* 固定 (the app's line lock, as its lock button does) + the cut times the line shows: J.lineSnapshot alone lets a line
+   with a recap cut move its cut starts (the planner weighs a locked recap cut by its text length, not as it first did),
+   so the times are kept as overrides cutTime too (beside any set by hand), the added ones listed in heldTimes (M.unlockLine).
+   scheme: pin every cut of the line to this colour scheme. Returns false for an interlude or a line not in the plan. */
+M.lockLine = (project, plan, li, scheme) => {
+  const ln = plan.lines[li], spec = ln && !ln.interlude ? J.lineSnapshot(plan, li) : null;
+  if (!spec) return false;
+  if (scheme != null) spec.forEach(c => { c.scheme = scheme; });
+  const ov = Object.assign({}, (project.overrides = project.overrides || {})[li] || {}, { lock: true, lockedSeed: ln.seed, lockedCuts: spec });
+  const cuts = M.lineCuts(plan, li);
+  if (cuts.length > 1 && project.media) {
+    const ct = Object.assign({}, ov.cutTime || {}), added = [];
+    cuts.slice(1).forEach((c, k) => { if (ct[k + 1] == null) { ct[k + 1] = c.start - ln.start; added.push(k + 1); } });
+    ov.cutTime = ct;
+    const lines = Object.assign({}, project.media.text.lines), L = Object.assign({}, lines[li] || {});
+    const held = [...new Set([...(L.heldTimes || []), ...added])].sort((a, b) => a - b);
+    if (held.length) L.heldTimes = held;
+    if (Object.keys(L).length) lines[li] = L;
+    project.media.text = Object.assign({}, project.media.text, { lines });
+  }
+  project.overrides[li] = ov;
+  return true;
+};
+/* the other way: lock off, and the cut times M.lockLine kept go too (cut times set by hand stay) */
+M.unlockLine = (project, li) => {
+  const ov = Object.assign({}, (project.overrides || {})[li] || {});
+  delete ov.lock; delete ov.lockedSeed; delete ov.lockedCuts;
+  const L = project.media && project.media.text.lines[li];
+  if (L && L.heldTimes) {
+    const ct = Object.assign({}, ov.cutTime || {});
+    for (const k of L.heldTimes) delete ct[k];
+    if (Object.keys(ct).length) ov.cutTime = ct; else delete ov.cutTime;
+    const lines = Object.assign({}, project.media.text.lines), L2 = Object.assign({}, L);
+    delete L2.heldTimes;
+    if (Object.keys(L2).length) lines[li] = L2; else delete lines[li];
+    project.media.text = Object.assign({}, project.media.text, { lines });
+  }
+  if (project.overrides) { if (Object.keys(ov).length) project.overrides[li] = ov; else delete project.overrides[li]; }
 };
 
 M.applyText = (m, plan, project) => {

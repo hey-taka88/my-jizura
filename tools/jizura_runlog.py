@@ -17,8 +17,8 @@ import datetime, hashlib, json, os, platform, re, subprocess, sys, time
 PHASES = {   # what a tool is for (the summary adds time and calls up per phase)
     'setup': {'new_project', 'open_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media', 'relink_media', 'set_output'},
     'edit': {'add_timed_media', 'remove_timed_media', 'set_line_style', 'set_text_options', 'set_line_media', 'set_look',
-             'set_media_options', 'media_omakase'},
-    'check': {'get_plan', 'get_line', 'preview', 'status', 'options', 'list_files', 'run_info'},
+             'set_media_options', 'media_omakase', 'lock_motion_palette', 'set_word_times'},
+    'check': {'get_plan', 'get_line', 'get_motion_plan', 'preview', 'status', 'options', 'list_files', 'run_info'},
     'output': {'save_project', 'export_mp4'},
     'record': {'log_note', 'start_run'},
 }

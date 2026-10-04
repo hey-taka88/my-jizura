@@ -22,6 +22,7 @@ def common(p):
     g = p.add_argument_group('入力')
     g.add_argument('--project', help='保存したプロジェクト（.jizura.json）から始める')
     g.add_argument('--lyrics', help='歌詞：LRC / SRT / VTT / Whisper・Suno の JSON / テキスト')
+    g.add_argument('--word-times', help='語の時刻だけを足すファイル（Suno の aligned_words・WhisperX の単語・拡張 LRC・words 付きの lines の JSON）。歌詞はそのまま')
     g.add_argument('--song', help='曲（mp3・wav・m4a、動画ファイルの音声も可）')
     g.add_argument('--media', action='append', default=[], help='画像・動画のファイルかフォルダ（何度でも。フォルダは名前順）')
     g.add_argument('--title', help='曲名'); g.add_argument('--artist', help='アーティスト名')
@@ -64,6 +65,10 @@ async def setup(jz, a, aspect):
         await jz.page.evaluate('(o) => { const P = J.ui.project; if (o.t) P.title = o.t; if (o.a) P.artist = o.a; J.uiApi.replan(); }', {'t': a.title, 'a': a.artist})
     if a.lyrics:
         r = await jz.set_lyrics(path=a.lyrics); log(f'歌詞: {r["lines"]} 行（時刻付き {r["timed"]} 行・{r["kind"]}）')
+    if a.word_times:
+        r = await jz.set_word_times(path=a.word_times)
+        log(f'語の時刻: {r["wordTimed"]}/{r["lines"]} 行' + (f'（合わない語の時刻 {len(r["unmatched"])}）' if r['unmatched'] else '')
+            + (f'・歌う時刻に合わせきれない行 {[o["line"] for o in r["off"]]}' if r['off'] else ''))
     if a.song:
         r = await jz.load_song(a.song); log(f'曲: {r["name"]}（{r["duration"]:.1f} 秒・約 {r["bpm"]} BPM）')
     if a.media:
