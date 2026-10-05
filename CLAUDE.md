@@ -50,6 +50,7 @@ node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触った
 
 ### テスト環境の用意
 
+- **PR / Codex クラウド**：GitHub Actions と共通の検証は `python3 dev/ci.py`。準備・範囲・Codex レビューの起動条件は [docs/CI.md](docs/CI.md)。
 - **Claude Code on the web**：SessionStart フック（`.claude/hooks/session-start.sh`）が `dev/requirements.txt` と `dev/` の npm パッケージを自動で入れる。`playwright install` は実行しない（コンテナに Chromium build 1194 が入っていて、`dev/requirements.txt` の playwright はそれに合わせて 1.56.0 に固定してある）。
 - **自分の PC**：`pip install -r dev/requirements.txt && python3 -m playwright install chromium`、AE パネルのテストをするなら `(cd dev && npm install)`。
 - **ベースライン（2026-10-01、Phase 1 後）**：`dev/smoke_all.py t_all` は 860 部品＋画像付きの組み合わせで problems 0、page errors []。`dev/media_e2e.py` は全項目 ok。`node dev/ae_test.js` は problems 0。smoke の「slow frames」は GPU のないクラウドのコンテナで 250 前後出るのが普通なので、合否には使わない（増え方が大きいときだけ `dev/cost_scan.py` で調べる）。

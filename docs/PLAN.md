@@ -245,6 +245,7 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 - [ ] Settings → Pages で `main` / `/ (root)` を配信元にする（リポジトリ所有者が手で行う。エージェントからは設定できない）
 - [x] `dev/requirements.txt`（playwright, Pillow）と、`python3 -m playwright install chromium` の手順を CLAUDE.md に追記。`dev/smoke_all.py t_all` が通ることを確認（ベースライン：860 部品、problems 0、page errors なし。`node dev/ae_test.js` も problems 0）
 - [x] Claude Code on the web 用の SessionStart フック（`.claude/hooks/session-start.sh`）で、上記の Python パッケージと `dev/` の npm パッケージを自動で入れる
+- [x] PR 時に既存ブラウザテストとビルド・構文・生成 HTML の一致を検査する GitHub Actions と共通ランナーを追加。Codex の作業・レビュー観点は `AGENTS.md`、運用と手動確認の境界は [CI.md](CI.md)
 - [x] `CHANGELOG.md` の先頭に「フォーク（my-jizura）」節を作り、以後フォーク側の変更はそこに書く（本家の節は触らない）
 - 受け入れ：`python3 build.py` が成功、ページの canonical が自分の URL、smoke が「problems: 0」
 
