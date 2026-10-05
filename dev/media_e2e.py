@@ -1,5 +1,5 @@
 """my-jizura: end-to-end check of the background-pictures layer (Phase 1) on the BUILT app (index.html).
-usage: python3 build.py && python3 dev/media_e2e.py [--shots out/media]
+usage: python3 build.py && python3 dev/media_e2e.py [--shots out/media] [--require-export]
 Serves the repository root on :8766, drops five generated pictures (and one text file) into 「画像を追加」, then checks:
   every lyric line shows a picture in turn · 「画像なし」 on one line · keyBg (green) draws no picture ·
   transparent PNG layers (back has the picture, front has not) · the background graphic is left out unless 「重ねる」 ·
@@ -128,7 +128,9 @@ async def main():
               const d = x.getImageData(0, 0, 160, 90).data, ch = [[], [], []];
               for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
               return { codec: r.codec, size: r.size, median: ch.map(a => { a.sort((p, q) => p - q); return a[a.length >> 1]; }) }; }""", t1)
-            if 'skip' in res: print('  skip export:', res['skip'])
+            if 'skip' in res:
+                print('  skip export:', res['skip'])
+                if '--require-export' in sys.argv: ok(False, 'MP4 export is required for CI')
             else: ok(near(res['median'], tuple(int(v * 0.75) for v in col[PICS[0][0]]), 45), f"MP4 ({res['codec']}, {res['size']} bytes) shows the picture (median {res['median']})")
             ok(not errs, f'no page errors {errs[:3]}')
             await b.close()

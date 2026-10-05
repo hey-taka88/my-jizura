@@ -1,0 +1,39 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Build, syntax and browser tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build, check syntax and committed HTML
+        run: python3 dev/ci.py --static-only
+      - name: Install browser test dependencies
+        run: |
+          python3 -m pip install -r dev/requirements.txt
+          python3 -m playwright install --with-deps chromium
+      - name: Browser regression tests and rendering smoke
+        run: python3 dev/ci.py --browser-only
