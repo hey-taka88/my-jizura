@@ -6,7 +6,7 @@ Makes a working folder with a generated song (WAV), Suno-style timed lyrics and 
   new name, nothing is overwritten; the lengths are reported) · save_project → open_project keeps the lines and the per-line choice ·
   saving under the same name twice: a new name (returned as `saved`), or replace=true for a file this server wrote; never a file
   that was there before · add_timed_media: one picture under the whole song covers the automatic ones, a line's own choice still
-  shows, it comes back after save → open · open_project names the pictures that are not loaded · set_output 9:16 ·
+  shows, it comes back after save → open · a picture on the front track (over the lyrics) placed by hand · open_project names the pictures that are not loaded · set_output 9:16 ·
   set_line_style: a phrase starts at its own time, a big centred line / a line moved up / a short vertical line come back the same
   (get_line and the same preview image) after save → open, a locked line survives set_look · relink_media in a fresh project ·
   the interlude title can be left out while the title stays · get_motion_plan changes nothing · lock_motion_palette keeps a range
@@ -162,6 +162,13 @@ async def main():
             ok(r['removed'] == 1 and not r['timed'], 'remove_timed_media')
             err, msg = await call('add_timed_media', {'media': 'nope.png'}, expect_error=True)
             ok(err, 'an unknown picture is refused')
+            bg0 = [(c['media'], c['start'], c['end']) for c in (await call('get_plan'))['cuts']]
+            r = await call('add_timed_media', {'media': '01.png', 'start': 2, 'end': 6, 'track': 'front', 'x': 0.3, 'y': -0.3, 'size': 0.2, 'rot': 10})
+            p6f = await call('get_plan')
+            ok(r['id'].startswith('f') and p6f['timed'][0]['track'] == 'front' and p6f['timed'][0]['size'] == 0.2 and p6f['front'] == [{'media': '01.png', 'start': 2, 'end': 6, 'placed': True}]
+               and [(c['media'], c['start'], c['end']) for c in p6f['cuts']] == bg0,
+               f"add_timed_media(track='front'): over the lyrics, placed by hand, the background is not touched {p6f['front']}")
+            await call('remove_timed_media', {'id': r['id']})
             print('lyric lines set by hand')
             import hashlib
             md5 = lambda c: hashlib.md5(base64.b64decode([x for x in c if getattr(x, 'type', '') == 'image'][0].data)).hexdigest()

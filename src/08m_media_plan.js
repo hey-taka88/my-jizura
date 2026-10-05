@@ -2,7 +2,7 @@
    my-jizura (fork) — media layer: project.media → plan.media
    Deterministic: the same project + lyrics timing always gives the same media cuts.
    plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
-   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v }
+   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v, rect }
    join: how it takes over from the picture right before ('fade' / 'cut' / a J.TRANS key), null when nothing touches it
    ============================================================ */
 (() => {
@@ -54,8 +54,11 @@ function resolveTrack(m, k, plan) {
   // pictures placed at a time of the song (a clip under the whole song, a picture for a section): end = given, else the next one's start.
   // They cover the automatic pictures; a picture chosen for a line still shows over them, and a clip keeps its own clock
   // (anchor) around it, so it never jumps back to its start at a lyric line.
+  // the front track is layers: its pictures may overlap (a logo all song long, a character for a verse), one without an end stays
+  // to the end of the song, and each comes and goes by itself (no つなぎ)
+  const layered = k === 'front';
   const tl = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
-    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : i + 1 < arr.length ? arr[i + 1].start : D) }))
+    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
     .filter(x => x.e - x.s > 0.02);
   const cut = (list, holes) => {                            // the parts of each [start, end) outside the holes
     const out = [];
@@ -85,7 +88,7 @@ function resolveTrack(m, k, plan) {
     const dur = s.end - s.start;
     const own = (key, dflt) => (src && src[key] && src[key] !== 'auto' ? src[key] : dflt);
     const seed = src && src.seed != null ? src.seed : J.h(A.seed, J.sid(s.assetId), Math.round(s.start * 100));
-    const touchPrev = !!(prv && Math.abs(prv.end - s.start) < NEAR), touchNext = !!(nxt && Math.abs(nxt.start - s.end) < NEAR);
+    const touchPrev = !layered && !!(prv && Math.abs(prv.end - s.start) < NEAR), touchNext = !layered && !!(nxt && Math.abs(nxt.start - s.end) < NEAR);
     const r = J.rng(J.h(seed, 0x6b62));
     const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
     const a = meta.get(s.assetId) || {}, isVideo = a.type === 'video';
@@ -119,7 +122,7 @@ function resolveTrack(m, k, plan) {
       fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
       join, transP, inDur, outDur, dir, treat: own('treat', A.treat || 'none'),
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
-      opacity: src ? src.opacity : 1, seed,
+      opacity: src ? src.opacity : 1, seed, rect: src && src.rect ? Object.assign({}, src.rect) : null,   // placed by hand (x, y, w, rot)
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
       // パン / 漂う: which way, and where the float starts
@@ -180,6 +183,12 @@ M.resolve = (project, plan) => {
   return out;
 };
 
+/* every cut showing at time t (the front track's layers overlap; the back track shows one) */
+M.cutsAt = (plan, t, track) => {
+  if (track !== 'front') { const c = M.cutAt(plan, t, track); return c ? [c] : []; }
+  const cs = plan && plan.media && plan.media.front && plan.media.front.cuts;
+  return cs ? cs.filter(c => c.start <= t && t < c.end) : [];
+};
 /* the media cut showing at time t on a track (binary search, like J.cutAt) */
 M.cutAt = (plan, t, track = 'back') => {
   const cs = plan && plan.media && plan.media[track] && plan.media[track].cuts;

@@ -4614,6 +4614,8 @@ J.omakase = (project, rnd = Math.random, themeId = null) => {
    Pictures that are not loaded (yet) are skipped; nothing here throws into the renderer.
    Phase 3: 動き (still / kenburns / pan / push / drift / beatPulse), 登場・退場 (fade / slide / zoom / wipe),
    つなぎ (cross-fade, or a lyric transition J.TRANS between two pictures), 加工 (08m_media_look.js), 暗幕.
+   Phase 3b: a cut with a rect is placed by hand (centre, width, rotation) instead of filling the frame — a logo, a character over
+   the lyrics on the front track; its motion moves it around that place.
    ============================================================ */
 (() => {
 'use strict';
@@ -4642,8 +4644,8 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
     frame = vt && M.videoFrame(asset, vt.main);
     if (!frame) return false;
   } else if (!asset.source) return false;
-  const sw = asset.w, sh = asset.h;
-  const base = c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
+  const sw = asset.w, sh = asset.h, R = c.rect;
+  const base = R ? W * R.w / sw : c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
   const lt = t - c.start, p = J.clamp(lt / Math.max(0.1, c.dur)), hp = c.hp || { sign: 1, ph: 0, per: 7 };
   let z = 1, px = 0, py = 0, pan = 0;
   switch (c.hold) {
@@ -4667,7 +4669,7 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   if (a <= 0.001) return false;
   const dw = sw * base * z, dh = sh * base * z;
   if (pan) { const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2); if (mx >= my) px = pan * mx * hp.sign; else py = pan * my * hp.sign; }
-  if (c.fit !== 'contain' && !(fx && (fx.in != null || fx.out != null) && (c.enter === 'slide' || c.exit === 'slide'))) {
+  if (!R && c.fit !== 'contain' && !(fx && (fx.in != null || fx.out != null) && (c.enter === 'slide' || c.exit === 'slide'))) {
     const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);   // a filled frame never shows its edge while drifting
     px = J.clamp(px, -mx, mx); py = J.clamp(py, -my, my);
   }
@@ -4680,13 +4682,19 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
   const step = frame ? 1 : Math.max(src.width / (dw * scale), src.height / (dh * scale));
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
-  const x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
+  let x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
+  const turn = R && R.rot ? R.rot * Math.PI / 180 : 0;
+  if (R) { x0 += R.x * W; y0 += R.y * H; }
   if (clip) {
     const k = ease(clip.k), d = clip.d;
     ctx.save(); ctx.beginPath();
     if (d === 'L') ctx.rect(0, 0, W * k, H); else if (d === 'R') ctx.rect(W * (1 - k), 0, W * k, H);
     else if (d === 'U') ctx.rect(0, 0, W, H * k); else ctx.rect(0, H * (1 - k), W, H * k);
     ctx.clip();
+  }
+  if (turn) {                                  // turned around its own centre
+    ctx.save(); ctx.translate(x0 + dw / 2, y0 + dh / 2); ctx.rotate(turn);
+    x0 = -dw / 2; y0 = -dh / 2;
   }
   ctx.globalAlpha = a;
   ctx.drawImage(src, x0, y0, dw, dh);
@@ -4696,6 +4704,7 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
     if (s2 && c.treat && c.treat !== 'none' && M.treated) s2 = M.treated(asset, s2, c, plan, 1);
     if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, x0, y0, dw, dh); }
   }
+  if (turn) ctx.restore();
   if (clip) ctx.restore();
   return true;
 }
@@ -4729,9 +4738,10 @@ function transJoin(ctx, plan, P, prev, c, t, W, H, scale, o) {
 M.drawTrack = (ctx, plan, t, track, o = {}) => {
   const P = plan && plan.media && plan.media[track];
   if (!P || !P.cuts.length || (M.measuring && M.measuring())) return;
+  const W = plan.W, H = plan.H, scale = o.scale || 1;
+  if (track === 'front') return drawLayers(ctx, plan, P, t, W, H, scale);
   const c = M.cutAt(plan, t, track);
   if (!c) return;
-  const W = plan.W, H = plan.H, scale = o.scale || 1;
   ctx.save();
   try {
     ctx.imageSmoothingEnabled = true;
@@ -4766,11 +4776,30 @@ M.drawTrack = (ctx, plan, t, track, o = {}) => {
   finally { ctx.restore(); }
 };
 
+/* the front track: every picture showing at t, in the order they start (later ones on top), each coming and going by itself */
+function drawLayers(ctx, plan, P, t, W, H, scale) {
+  const cs = M.cutsAt(plan, t, 'front');
+  if (!cs.length) return;
+  ctx.save();
+  try {
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalCompositeOperation = BLEND[P.blend] || 'source-over';
+    for (const c of cs) {
+      const lt = t - c.start, fx = {};
+      if (c.enter !== 'cut' && c.inDur > 0 && lt < c.inDur) fx.in = ease(lt / c.inDur);
+      if (c.exit !== 'cut' && c.outDur > 0 && c.end - t < c.outDur) fx.out = ease((c.end - t) / c.outDur);
+      ctx.save();
+      try { drawCut(ctx, plan, c, t, W, H, P.opacity * c.opacity, scale, fx); } finally { ctx.restore(); }
+    }
+  } catch (e) { console.warn('media front', e); }
+  finally { ctx.restore(); }
+}
+
 /* the lyric background graphic (J.BG) is left out where a background picture shows, unless 「重ねる」 is on */
 M.hidesBg = (plan, t) => {
   if (!plan || !plan.media || plan.media.lyricBg === 'over') return false;
   const c = M.cutAt(plan, t, 'back');
-  return !!(c && J.mediaAssets.has(c.assetId));
+  return !!(c && !c.rect && J.mediaAssets.has(c.assetId));     // a picture placed small does not cover the frame
 };
 })();
 
@@ -5030,6 +5059,9 @@ function cut(c, i) {
     treat: pick(c.treat, ['auto'].concat(M.TREAT), 'auto'), trans: join(c.trans, 'auto'),
   };
   if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
+  // 配置 (Phase 3b): placed by hand instead of filling the frame — the centre as an offset from the frame centre (fractions of the
+  // frame, ±0.5 = the edge; beyond it partly outside), the width as a fraction of the frame width (height by the picture), degrees
+  if (isObj(c.rect)) o.rect = { x: num(c.rect.x, -1, 1, 0), y: num(c.rect.y, -1, 1, 0), w: num(c.rect.w, 0.02, 4, 1), rot: num(c.rect.rot, -180, 180, 0) };
   if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
   return o;
 }
@@ -5085,7 +5117,7 @@ M.assetById = (project, id) => ((project && project.media && project.media.asset
    my-jizura (fork) — media layer: project.media → plan.media
    Deterministic: the same project + lyrics timing always gives the same media cuts.
    plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
-   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v }
+   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v, rect }
    join: how it takes over from the picture right before ('fade' / 'cut' / a J.TRANS key), null when nothing touches it
    ============================================================ */
 (() => {
@@ -5137,8 +5169,11 @@ function resolveTrack(m, k, plan) {
   // pictures placed at a time of the song (a clip under the whole song, a picture for a section): end = given, else the next one's start.
   // They cover the automatic pictures; a picture chosen for a line still shows over them, and a clip keeps its own clock
   // (anchor) around it, so it never jumps back to its start at a lyric line.
+  // the front track is layers: its pictures may overlap (a logo all song long, a character for a verse), one without an end stays
+  // to the end of the song, and each comes and goes by itself (no つなぎ)
+  const layered = k === 'front';
   const tl = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
-    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : i + 1 < arr.length ? arr[i + 1].start : D) }))
+    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
     .filter(x => x.e - x.s > 0.02);
   const cut = (list, holes) => {                            // the parts of each [start, end) outside the holes
     const out = [];
@@ -5168,7 +5203,7 @@ function resolveTrack(m, k, plan) {
     const dur = s.end - s.start;
     const own = (key, dflt) => (src && src[key] && src[key] !== 'auto' ? src[key] : dflt);
     const seed = src && src.seed != null ? src.seed : J.h(A.seed, J.sid(s.assetId), Math.round(s.start * 100));
-    const touchPrev = !!(prv && Math.abs(prv.end - s.start) < NEAR), touchNext = !!(nxt && Math.abs(nxt.start - s.end) < NEAR);
+    const touchPrev = !layered && !!(prv && Math.abs(prv.end - s.start) < NEAR), touchNext = !layered && !!(nxt && Math.abs(nxt.start - s.end) < NEAR);
     const r = J.rng(J.h(seed, 0x6b62));
     const zoomIn = r.chance(0.6), z = r.range(0.06, 0.11);
     const a = meta.get(s.assetId) || {}, isVideo = a.type === 'video';
@@ -5202,7 +5237,7 @@ function resolveTrack(m, k, plan) {
       fit: own('fit', A.fit), enter, hold: own('hold', isVideo ? 'still' : A.hold), exit,   // a clip moves by itself: no slow zoom unless asked
       join, transP, inDur, outDur, dir, treat: own('treat', A.treat || 'none'),
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
-      opacity: src ? src.opacity : 1, seed,
+      opacity: src ? src.opacity : 1, seed, rect: src && src.rect ? Object.assign({}, src.rect) : null,   // placed by hand (x, y, w, rot)
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
       // パン / 漂う: which way, and where the float starts
@@ -5263,6 +5298,12 @@ M.resolve = (project, plan) => {
   return out;
 };
 
+/* every cut showing at time t (the front track's layers overlap; the back track shows one) */
+M.cutsAt = (plan, t, track) => {
+  if (track !== 'front') { const c = M.cutAt(plan, t, track); return c ? [c] : []; }
+  const cs = plan && plan.media && plan.media.front && plan.media.front.cuts;
+  return cs ? cs.filter(c => c.start <= t && t < c.end) : [];
+};
 /* the media cut showing at time t on a track (binary search, like J.cutAt) */
 M.cutAt = (plan, t, track = 'back') => {
   const cs = plan && plan.media && plan.media[track] && plan.media[track].cuts;
@@ -5755,7 +5796,8 @@ function needed(plan, t) {
     if (!P || !P.cuts.length) continue;
     const c = M.cutAt(plan, t, k);
     const add = cut => { if (!cut || cut.type !== 'video') return; const vt = M.videoTimes(plan, cut, t); if (!vt) return; if (!out.has(cut.assetId)) out.set(cut.assetId, []); out.get(cut.assetId).push({ c: cut, vt }); };
-    add(c);
+    if (k === 'front') { for (const x of M.cutsAt(plan, t, k)) add(x); }   // layers: every clip showing
+    else add(c);
     if (c && c.index > 0 && c.join && c.join !== 'cut' && t - c.start < c.inDur) add(P.cuts[c.index - 1]);   // the picture it takes over from
     const nx = c ? P.cuts[c.index + 1] : P.cuts.find(x => x.start > t);
     if (nx && nx.type === 'video' && nx.start - t < 2) next.add(nx.assetId);

@@ -122,8 +122,11 @@ JS_PLAN = r"""() => {
       trans: m.autoFill.back.trans, enter: m.autoFill.back.enter, exit: m.autoFill.back.exit, treat: m.autoFill.back.treat, scrim: m.scrim.mode, scrimAmount: m.scrim.amount },
     cuts: mp ? mp.back.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end), timed: !!c.timed })) : [],
     // pictures placed at a time of the song (add_timed_media): over the automatic ones, under the ones chosen for a line
-    timed: m.tracks.back.cuts.filter(c => !c.lineRef).map(c => ({ id: c.id, media: c.assetId ? name(c.assetId) : 'none', start: r2(c.start), end: c.end == null ? null : r2(c.end),
-      clipStart: c.video && c.video.start != null ? c.video.start : null })),
+    timed: [].concat(...['back', 'front'].map(tk => m.tracks[tk].cuts.filter(c => !c.lineRef).map(c => Object.assign({ id: c.id, track: tk, media: c.assetId ? name(c.assetId) : 'none',
+      start: r2(c.start), end: c.end == null ? null : r2(c.end), clipStart: c.video && c.video.start != null ? c.video.start : null },
+      c.rect ? { x: c.rect.x, y: c.rect.y, size: c.rect.w, rot: c.rect.rot } : {}, c.opacity !== 1 ? { opacity: c.opacity } : {})))),
+    // the front track (over the lyrics): what shows when
+    front: mp ? mp.front.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end), placed: !!c.rect })) : [],
     missing: m.assets.filter(a => !J.mediaAssets.has(a.id)).map(a => a.name),   // in the project but not loaded: add_media them again
   };
 }"""
@@ -167,12 +170,15 @@ JS_SET_LINE = r"""([i, v]) => {
 }"""
 
 JS_ADD_TIMED = r"""(o) => {
-  const S = J.ui, back = S.project.media.tracks.back;
-  const used = new Set(back.cuts.map(c => c.id));
-  let k = 1; while (used.has('t' + k)) k++;
-  const c = { id: 't' + k, assetId: o.assetId, lineRef: null, start: o.start, end: o.end, fit: o.fit || 'auto', enter: 'auto', hold: 'auto', exit: 'auto', opacity: 1 };
+  const S = J.ui, T = S.project.media.tracks, tr = T[o.track];
+  const used = new Set([...T.back.cuts, ...T.front.cuts].map(c => c.id));       // ids are unique over both tracks
+  const pre = o.track === 'front' ? 'f' : 't';
+  let k = 1; while (used.has(pre + k)) k++;
+  const c = { id: pre + k, assetId: o.assetId, lineRef: null, start: o.start, end: o.end, fit: o.fit || 'auto', enter: o.enter || 'auto', hold: o.hold || 'auto',
+    exit: o.exit || 'auto', opacity: o.opacity != null ? o.opacity : 1 };
   if (o.clipStart != null) c.video = { start: o.clipStart };
-  back.cuts.push(c);
+  if (o.rect) c.rect = o.rect;
+  tr.cuts.push(c);
   S.project.media = J.media.normalize(S.project.media);     // the same checks as a project file
   J.uiApi.replan(); J.uiApi.flushSave();
   return c.id;
@@ -579,24 +585,40 @@ class Jizura:
         await self.page.wait_for_timeout(200)
         return await self._ev('() => J.ui.project.media.assets.map(a => a.name)')
 
-    async def add_timed_media(self, media, start=0, end=None, clip_start=None, fit=None):
+    async def add_timed_media(self, media, start=0, end=None, clip_start=None, fit=None, track='back', x=None, y=None, size=None, rot=None,
+                              opacity=None, enter=None, exit=None, hold=None):
         """a picture or clip at a time of the song (seconds), e.g. one clip under the whole song: start=0, end=None (= until the next
         timed one, or the end). It covers the automatic per-line pictures there; a picture chosen for a line still shows over it, and a
         clip keeps running on its own clock (it never restarts at a lyric line). media='none' leaves that time without a picture.
-        clip_start: where in the clip to begin (seconds). Returns the id (for remove_timed_media)"""
+        clip_start: where in the clip to begin (seconds). track 'front': over the lyrics (a logo, a character, a picture with
+        transparency). x / y: its centre from the frame centre (-0.5 … 0.5 of the frame = the edges), size: its width (fraction of the
+        frame width), rot: degrees — any of them places it by hand instead of filling the frame. opacity 0 … 1; enter / exit / hold:
+        its own motion (see options()['mediaEnter'] / ['mediaHold']). Returns the id (for remove_timed_media)"""
         start = float(start)
         if start < 0 or (end is not None and float(end) <= start): raise JizuraError(f'start / end の範囲が正しくありません: {start} / {end}')
         if fit is not None and fit not in MEDIA_FIT: raise JizuraError(f'fit は {MEDIA_FIT} のどれか: {fit}')
+        if track not in ('back', 'front'): raise JizuraError(f"track は back（歌詞の下）か front（歌詞の上）: {track}")
+        rect = None
+        if any(v is not None for v in (x, y, size, rot)):
+            for k, v, lo, hi in (('x', x, -1, 1), ('y', y, -1, 1), ('size', size, 0.02, 4), ('rot', rot, -180, 180)):
+                if v is not None and not lo <= float(v) <= hi: raise JizuraError(f'{k} は {lo}〜{hi}: {v}')
+            rect = {'x': float(x or 0), 'y': float(y or 0), 'w': float(size if size is not None else 0.4), 'rot': float(rot or 0)}
+        if opacity is not None and not 0 <= float(opacity) <= 1: raise JizuraError(f'opacity は 0〜1: {opacity}')
+        for k, v, ok in (('enter', enter, MEDIA_ENTER), ('exit', exit, MEDIA_ENTER), ('hold', hold, MEDIA_HOLD)):
+            if v is not None and v not in ok: raise JizuraError(f'{k} は {ok} のどれか: {v}')
         aid = '' if media == 'none' else await self._asset_id(media)
         cid = await self._ev(JS_ADD_TIMED, {'assetId': aid, 'start': start, 'end': None if end is None else float(end),
-                                             'clipStart': None if clip_start is None else float(clip_start), 'fit': fit})
+                                             'clipStart': None if clip_start is None else float(clip_start), 'fit': fit, 'track': track,
+                                             'rect': rect, 'opacity': None if opacity is None else float(opacity),
+                                             'enter': enter, 'exit': exit, 'hold': hold})
         p = await self.get_plan()
         return {'id': cid, 'timed': p['timed'], 'cuts': len(p['cuts'])}
 
     async def remove_timed_media(self, id='all'):
         """remove one picture placed at a time (its id from get_plan's 'timed'), or all of them"""
-        n = await self._ev('''(id) => { const back = J.ui.project.media.tracks.back, before = back.cuts.length;
-          back.cuts = back.cuts.filter(c => c.lineRef || (id !== 'all' && c.id !== id)); J.uiApi.replan(); J.uiApi.flushSave(); return before - back.cuts.length; }''', str(id))
+        n = await self._ev('''(id) => { let n = 0;
+          for (const tr of Object.values(J.ui.project.media.tracks)) { const before = tr.cuts.length; tr.cuts = tr.cuts.filter(c => c.lineRef || (id !== 'all' && c.id !== id)); n += before - tr.cuts.length; }
+          J.uiApi.replan(); J.uiApi.flushSave(); return n; }''', str(id))
         if not n: raise JizuraError(f'時刻で置いた画像・動画が見つかりません: {id}')
         return {'removed': n, 'timed': (await self.get_plan())['timed']}
 

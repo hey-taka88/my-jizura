@@ -76,6 +76,9 @@ function cut(c, i) {
     treat: pick(c.treat, ['auto'].concat(M.TREAT), 'auto'), trans: join(c.trans, 'auto'),
   };
   if (c.seed != null) o.seed = int(c.seed, 0, 2 ** 31 - 1, 0);
+  // 配置 (Phase 3b): placed by hand instead of filling the frame — the centre as an offset from the frame centre (fractions of the
+  // frame, ±0.5 = the edge; beyond it partly outside), the width as a fraction of the frame width (height by the picture), degrees
+  if (isObj(c.rect)) o.rect = { x: num(c.rect.x, -1, 1, 0), y: num(c.rect.y, -1, 1, 0), w: num(c.rect.w, 0.02, 4, 1), rot: num(c.rect.rot, -180, 180, 0) };
   if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
   return o;
 }
