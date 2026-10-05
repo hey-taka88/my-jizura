@@ -40,6 +40,7 @@ python3 dev/video_e2e.py                          # ビルド済みの index.htm
 python3 dev/media_e2e.py [--shots out/media]      # ビルド済みの index.html で画像レイヤーを通しで確認（画像の追加 → 行ごとの切り替え → 再読み込み → 書き出し）。先に python3 build.py
 python3 dev/media_look_e2e.py [--shots out/look]   # Phase 3 の見せ方（加工・つなぎ・動き・登場・暗幕）をビルド済みの index.html で確認
 python3 dev/text_style_e2e.py                     # 行の見た目の手動指定（位置・大きさ・色・間奏の曲名・カットごとの指定・固定）をドライバー経由で確認
+python3 dev/front_e2e.py                          # 前景（歌詞の上に重ねる画像。位置・大きさ・回転・重なり・透過 PNG の層・書き出し）をドライバー経由で確認
 python3 dev/mcp_e2e.py [--browser chromium]       # MCP サーバー（tools/jizura_mcp.py）を本物の MCP クライアントから通しで確認（mcp 1.x / 2.x）
 python3 tools/jizura_cli.py info                  # CLI：選べる値とブラウザの対応状況。render / preview / plan は docs/MCP.md
 node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触ったときだけ

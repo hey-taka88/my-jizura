@@ -280,19 +280,29 @@ async def remove_media(media: str) -> dict:
 
 @mcp.tool()
 @recorded
-async def add_timed_media(media: str, start: float = 0, end: float | None = None, clip_start: float | None = None, fit: str = '') -> dict:
+async def add_timed_media(media: str, start: float = 0, end: float | None = None, clip_start: float | None = None, fit: str = '',
+                          track: str = 'back', x: float | None = None, y: float | None = None, size: float | None = None,
+                          rot: float | None = None, opacity: float | None = None, enter: str = '', exit: str = '', hold: str = '') -> dict:
     """Place a picture or clip at a time of the song (seconds) instead of per lyric line — e.g. one background clip under the whole
     song: start=0 and no end (end = the next timed placement, or the end of the song). It covers the automatic per-line pictures in
     that time; a picture chosen for a line (set_line_media) still shows over it, and a clip keeps running on the song's clock (it never
     jumps back to its start at a lyric line, and any seek shows the same frame). media: a name or number, or 'none' (no picture then).
-    clip_start: where in the clip to begin. fit: cover | contain. Returns its id and every timed placement."""
-    return await call(lambda jz: jz.add_timed_media(media, start=start, end=end, clip_start=clip_start, fit=fit or None))
+    clip_start: where in the clip to begin. fit: cover | contain.
+    track 'front' puts it OVER the lyrics (前景: a logo, a character, a PNG with transparency, a frame): front pictures may overlap
+    (each its own layer, the later one on top), one without an end stays until the end of the song, each fades in and out by itself.
+    x / y: its centre from the frame centre (-0.5 … 0.5 of the frame = the edges; y < 0 = up), size: its width as a fraction of the
+    frame width (0.02 … 4), rot: degrees — any of these places it by hand instead of filling the frame (also on the back track).
+    opacity 0 … 1. enter / exit (options()['mediaEnter']) and hold (options()['mediaHold']): its own motion.
+    Check it with preview. Returns its id and every timed placement (with its track)."""
+    return await call(lambda jz: jz.add_timed_media(media, start=start, end=end, clip_start=clip_start, fit=fit or None, track=track,
+                                                    x=x, y=y, size=size, rot=rot, opacity=opacity, enter=enter or None,
+                                                    exit=exit or None, hold=hold or None))
 
 
 @mcp.tool()
 @recorded
 async def remove_timed_media(id: str = 'all') -> dict:
-    """Remove a picture placed at a time (its id from add_timed_media / get_plan's `timed`), or 'all' of them."""
+    """Remove a picture placed at a time, on either track (its id from add_timed_media / get_plan's `timed`), or 'all' of them."""
     return await call(lambda jz: jz.remove_timed_media(id))
 
 

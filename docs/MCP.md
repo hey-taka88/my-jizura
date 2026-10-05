@@ -72,7 +72,7 @@ tool_timeout_sec = 1800
 | `status` | 使っているブラウザと、H.264 を読み書きできるか |
 | `options` | テーマ・スタイル・雰囲気・画面比など、選べる値の一覧 |
 | `new_project` / `open_project` / `save_project` | プロジェクトを新しく作る・開く（`.jizura.json`）・保存する。保存は `{requested, saved, collision}` を返すので、次に開くときは **`saved`** を使う。`replace=true` で、このサーバーが今回書いたファイルなら同じ名前に上書き。開いたときに読み込まれていない画像・動画は `missing` に出る |
-| `add_timed_media` / `remove_timed_media` | 曲の時刻で画像・動画を置く（例：曲全体に 1 本の背景動画）。行ごとの自動の画像より優先、行ごとに選んだ画像よりは下。動画は曲の時計で流れ続け、行の切り替えで頭に戻らない |
+| `add_timed_media` / `remove_timed_media` | 曲の時刻で画像・動画を置く（例：曲全体に 1 本の背景動画）。行ごとの自動の画像より優先、行ごとに選んだ画像よりは下。動画は曲の時計で流れ続け、行の切り替えで頭に戻らない。`track='front'` で**歌詞の上（前景）**に置く（ロゴ・立ち絵・透過 PNG・枠）：前景は重ねてよく（あとから始まるものが上）、終わりを指定しなければ曲の最後まで、それぞれがフェードで出入りする。`x` / `y`（画面の中心からのずれ。±0.5 で端）・`size`（画面の幅に対する幅）・`rot`（度）のどれかを渡すと、画面いっぱいではなくその位置・大きさで置く（背景でも可）。`opacity`、`enter` / `exit` / `hold` も |
 | `set_lyrics` | 歌詞を入れる（LRC・SRT・VTT・Whisper / Suno の JSON は時刻付き、テキストは 1 行 1 フレーズ）。Suno の `aligned_words`・WhisperX などの単語ごとの時刻と拡張 LRC の `<mm:ss.xx>` は**語の時刻**として残り、行の中の句（カット）が、その語を歌う時刻で切り替わる。`wordTimed` に語の時刻を持つ行の数が返る |
 | `load_song` | 曲を読み込む（長さとテンポを解析） |
 | `add_media` / `remove_media` | 画像・動画を足す（フォルダなら名前順）・外す |
@@ -143,7 +143,7 @@ python3 tools/jizura_cli.py plan --project out/mv.jizura.json --media pics/
 python3 tools/jizura_cli.py info
 ```
 
-ほかの指定：`--line-style 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1`（行の見た目を固定。`2:cut_times=1.6` で 2 つ目の句を 1.6 秒後に、`4.2:layout=vcols` で 4 行目の 2 カット目だけ）、`--word-times timing_master.json`（歌詞はそのままで語の時刻だけを足す）、`--range-style 33.3-42.6=quiet`（その秒の範囲の見せ方の強さ。`calm` / `normal` も。何度でも）、`--no-interlude-title`、`--relink 素材フォルダ`（`--project` の素材を戻す）、`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
+ほかの指定：`--line-style 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1`（行の見た目を固定。`2:cut_times=1.6` で 2 つ目の句を 1.6 秒後に、`4.2:layout=vcols` で 4 行目の 2 カット目だけ）、`--word-times timing_master.json`（歌詞はそのままで語の時刻だけを足す）、`--range-style 33.3-42.6=quiet`（その秒の範囲の見せ方の強さ。`calm` / `normal` も。何度でも）、`--no-interlude-title`、`--relink 素材フォルダ`（`--project` の素材を戻す）、`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--front-media logo.png@0-:x=0.4,y=-0.4,size=0.15`（歌詞の上に重ねる。`rot=`・`opacity=` も。何度でも）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
 `--res 720`、`--fps 30`、`--range 30-45`（その秒だけ）、`--no-audio`、`--force`（上書き）。一覧は `python3 tools/jizura_cli.py render -h`。
 
 ## うまくいかないとき
