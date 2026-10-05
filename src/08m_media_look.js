@@ -49,12 +49,15 @@ M.treated = (asset, src, c, plan, slot = 0) => {
   if (!kind || kind === 'none' || !src) return src;
   const T = tones(plan);
   if (asset.type !== 'video') {
-    // one treated copy per picture copy: another treatment or style colour repaints it (no pile of full-size canvases);
+    // one treated copy per picture copy: another treatment, style colour or keyed source revision repaints it;
     // only duotone / match use the style's colours
     const key = kind === 'duotone' || kind === 'match' ? kind + '|' + T.bg + T.dark + T.light + T.accent : kind;
+    const revision = M.chromaRevision ? M.chromaRevision(src) : 0;
     let e = kept.get(src);
     if (!e) kept.set(src, (e = { key: null, cv: mk(2, 2) }));
-    if (e.key !== key) { paint(e.cv, src, src.width, src.height, kind, T, true); e.key = key; }
+    if (e.key !== key || e.revision !== revision) {
+      paint(e.cv, src, src.width, src.height, kind, T, true); e.key = key; e.revision = revision;
+    }
     return e.cv;
   }
   // a clip frame: into the clip's own canvas (one per slot: the seam of a loop draws two frames)

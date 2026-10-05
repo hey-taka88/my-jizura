@@ -120,6 +120,8 @@ function keyInto(out, src, w, h, col, K) {
 }
 
 const kept = new WeakMap();   // picture copy → { key, cv }
+const revisions = new WeakMap();   // keyed canvas → content revision (the canvas itself is reused)
+M.chromaRevision = src => revisions.get(src) || 0;
 M.keyed = (asset, src, c, slot = 0) => {
   const K = c && c.chroma;
   if (!K || !src) return src;
@@ -133,7 +135,10 @@ M.keyed = (asset, src, c, slot = 0) => {
       const key = [col, K.tol, K.soft, K.spill, w, h].join('|');
       let e = kept.get(src);
       if (!e) kept.set(src, (e = { key: null, cv: mk(2, 2) }));
-      if (e.key !== key) { keyInto(e.cv, src, w, h, col, K); e.key = key; }
+      if (e.key !== key) {
+        keyInto(e.cv, src, w, h, col, K); e.key = key;
+        revisions.set(e.cv, (revisions.get(e.cv) || 0) + 1);
+      }
       return e.cv;
     }
     const cvs = asset.keyCv || (asset.keyCv = []);
