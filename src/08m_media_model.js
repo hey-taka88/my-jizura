@@ -79,6 +79,10 @@ function cut(c, i) {
   // 配置 (Phase 3b): placed by hand instead of filling the frame — the centre as an offset from the frame centre (fractions of the
   // frame, ±0.5 = the edge; beyond it partly outside), the width as a fraction of the frame width (height by the picture), degrees
   if (isObj(c.rect)) o.rect = { x: num(c.rect.x, -1, 1, 0), y: num(c.rect.y, -1, 1, 0), w: num(c.rect.w, 0.02, 4, 1), rot: num(c.rect.rot, -180, 180, 0) };
+  // クロマキー (Phase 3b-2, 08m_media_chroma.js): the key colour ('auto' = round the picture's edge), how close counts as it (tol),
+  // the soft edge (soft) and how much of its tint is taken out of what stays (spill) — distances in YCbCr colour
+  if (isObj(c.chroma)) o.chroma = { color: /^#[0-9a-f]{6}$/i.test(c.chroma.color) ? c.chroma.color.toLowerCase() : 'auto',
+    tol: num(c.chroma.tol, 0, 0.6, 0.1), soft: num(c.chroma.soft, 0, 0.6, 0.08), spill: num(c.chroma.spill, 0, 1, 0.6) };
   if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
   return o;
 }

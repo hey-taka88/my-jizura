@@ -52,8 +52,8 @@ def common(p):
     g = p.add_argument_group('画像・動画（続き）')
     g.add_argument('--timed-media', action='append', default=[], metavar='画像@開始-終了',
                    help='曲の時刻で置く画像・動画（例 bg.mp4@0- で曲全体、city.jpg@30-45）。行の切り替えで頭に戻らない。何度でも')
-    g.add_argument('--front-media', action='append', default=[], metavar='画像@開始-終了[:x=,y=,size=,rot=,opacity=]',
-                   help='歌詞の上に重ねる画像・動画（前景。例 logo.png@0-:x=0.4,y=-0.4,size=0.15）。重ねてよい。何度でも')
+    g.add_argument('--front-media', action='append', default=[], metavar='画像@開始-終了[:x=,y=,size=,rot=,opacity=,key=]',
+                   help='歌詞の上に重ねる画像・動画（前景。例 logo.png@0-:x=0.4,y=-0.4,size=0.15、グリーンバックなら singer.mp4@30-60:key=auto）。重ねてよい。何度でも')
     g = p.add_argument_group('出力')
     g.add_argument('--aspect', action='append', choices=ASPECTS, help='画面比（何度でも。2 つ以上なら比率ごとにファイル）')
     g.add_argument('--res', type=int, choices=RES); g.add_argument('--fps', type=int, choices=FPS)
@@ -98,10 +98,10 @@ async def setup(jz, a, aspect):
         t0, _, t1 = rng.partition('-')
         try:
             t0 = float(t0 or 0); t1 = float(t1) if t1 else None
-            kw = {k.strip(): float(v) for k, v in (kv.split('=', 1) for kv in opts.split(',') if kv.strip())}
-        except ValueError: raise JizuraError(f'--front-media は 画像@開始-終了[:x=,y=,size=,rot=,opacity=] の形で: {s}')
-        bad = set(kw) - {'x', 'y', 'size', 'rot', 'opacity'}
-        if not name or bad: raise JizuraError(f'--front-media は 画像@開始-終了[:x=,y=,size=,rot=,opacity=] の形で: {s}')
+            kw = {k.strip(): (v.strip() if k.strip() == 'key' else float(v)) for k, v in (kv.split('=', 1) for kv in opts.split(',') if kv.strip())}
+        except ValueError: raise JizuraError(f'--front-media は 画像@開始-終了[:x=,y=,size=,rot=,opacity=,key=,key_tol=] の形で: {s}')
+        bad = set(kw) - {'x', 'y', 'size', 'rot', 'opacity', 'key', 'key_tol', 'key_soft', 'key_spill'}
+        if not name or bad: raise JizuraError(f'--front-media は 画像@開始-終了[:x=,y=,size=,rot=,opacity=,key=,key_tol=] の形で: {s}')
         r = await jz.add_timed_media(name, start=t0, end=t1, track='front', **kw)
         log(f'前景: {name} {t0:g}〜{"" if t1 is None else f"{t1:g}"} 秒（{r["id"]}）')
     if a.relink:

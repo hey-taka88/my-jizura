@@ -6,7 +6,7 @@
    Phase 3: 動き (still / kenburns / pan / push / drift / beatPulse), 登場・退場 (fade / slide / zoom / wipe),
    つなぎ (cross-fade, or a lyric transition J.TRANS between two pictures), 加工 (08m_media_look.js), 暗幕.
    Phase 3b: a cut with a rect is placed by hand (centre, width, rotation) instead of filling the frame — a logo, a character over
-   the lyrics on the front track; its motion moves it around that place.
+   the lyrics on the front track; its motion moves it around that place. A cut with chroma is keyed first (08m_media_chroma.js).
    ============================================================ */
 (() => {
 'use strict';
@@ -68,6 +68,7 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   const zMax = c.hold === 'kenburns' && c.kb ? Math.max(c.kb.s0, c.kb.s1) : ZMAX[c.hold] || 1;
   let src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
   if (!src) return false;
+  if (c.chroma && M.keyed) src = M.keyed(asset, src, c, 0);         // クロマキー first, on the picture's own colours
   if (c.treat && c.treat !== 'none' && M.treated) src = M.treated(asset, src, c, plan, 0);
   // the copy is already close to the drawn size (made once with high quality), so plain bilinear is enough per frame;
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
@@ -92,6 +93,7 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   // loop seam (exports): the start of the clip fades in over its end
   if (vt && vt.alt != null && vt.k > 0) {
     let s2 = M.videoCap(asset, vt.alt);
+    if (s2 && c.chroma && M.keyed) s2 = M.keyed(asset, s2, c, 1);
     if (s2 && c.treat && c.treat !== 'none' && M.treated) s2 = M.treated(asset, s2, c, plan, 1);
     if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, x0, y0, dw, dh); }
   }

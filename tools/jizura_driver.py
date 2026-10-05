@@ -124,7 +124,9 @@ JS_PLAN = r"""() => {
     // pictures placed at a time of the song (add_timed_media): over the automatic ones, under the ones chosen for a line
     timed: [].concat(...['back', 'front'].map(tk => m.tracks[tk].cuts.filter(c => !c.lineRef).map(c => Object.assign({ id: c.id, track: tk, media: c.assetId ? name(c.assetId) : 'none',
       start: r2(c.start), end: c.end == null ? null : r2(c.end), clipStart: c.video && c.video.start != null ? c.video.start : null },
-      c.rect ? { x: c.rect.x, y: c.rect.y, size: c.rect.w, rot: c.rect.rot } : {}, c.opacity !== 1 ? { opacity: c.opacity } : {})))),
+      c.rect ? { x: c.rect.x, y: c.rect.y, size: c.rect.w, rot: c.rect.rot } : {}, c.opacity !== 1 ? { opacity: c.opacity } : {},
+      c.chroma ? { key: c.chroma.color === 'auto' ? 'auto (' + J.media.keyColor(J.mediaAssets.get(c.assetId) || {}, c.chroma) + ')' : c.chroma.color,
+        keyTol: c.chroma.tol, keySoft: c.chroma.soft, keySpill: c.chroma.spill } : {})))),
     // the front track (over the lyrics): what shows when
     front: mp ? mp.front.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end), placed: !!c.rect })) : [],
     missing: m.assets.filter(a => !J.mediaAssets.has(a.id)).map(a => a.name),   // in the project but not loaded: add_media them again
@@ -178,6 +180,7 @@ JS_ADD_TIMED = r"""(o) => {
     exit: o.exit || 'auto', opacity: o.opacity != null ? o.opacity : 1 };
   if (o.clipStart != null) c.video = { start: o.clipStart };
   if (o.rect) c.rect = o.rect;
+  if (o.chroma) c.chroma = o.chroma;
   tr.cuts.push(c);
   S.project.media = J.media.normalize(S.project.media);     // the same checks as a project file
   J.uiApi.replan(); J.uiApi.flushSave();
@@ -586,14 +589,16 @@ class Jizura:
         return await self._ev('() => J.ui.project.media.assets.map(a => a.name)')
 
     async def add_timed_media(self, media, start=0, end=None, clip_start=None, fit=None, track='back', x=None, y=None, size=None, rot=None,
-                              opacity=None, enter=None, exit=None, hold=None):
+                              opacity=None, enter=None, exit=None, hold=None, key=None, key_tol=None, key_soft=None, key_spill=None):
         """a picture or clip at a time of the song (seconds), e.g. one clip under the whole song: start=0, end=None (= until the next
         timed one, or the end). It covers the automatic per-line pictures there; a picture chosen for a line still shows over it, and a
         clip keeps running on its own clock (it never restarts at a lyric line). media='none' leaves that time without a picture.
         clip_start: where in the clip to begin (seconds). track 'front': over the lyrics (a logo, a character, a picture with
         transparency). x / y: its centre from the frame centre (-0.5 … 0.5 of the frame = the edges), size: its width (fraction of the
         frame width), rot: degrees — any of them places it by hand instead of filling the frame. opacity 0 … 1; enter / exit / hold:
-        its own motion (see options()['mediaEnter'] / ['mediaHold']). Returns the id (for remove_timed_media)"""
+        its own motion (see options()['mediaEnter'] / ['mediaHold']). key: クロマキー — 'auto' (the colour round the picture's edge,
+        e.g. a green screen) or '#rrggbb'; key_tol (0 … 0.6, default 0.1): how close to it counts as it, key_soft (0 … 0.6, 0.08): the
+        soft edge, key_spill (0 … 1, 0.6): how much of its tint is taken out of what stays. Returns the id (for remove_timed_media)"""
         start = float(start)
         if start < 0 or (end is not None and float(end) <= start): raise JizuraError(f'start / end の範囲が正しくありません: {start} / {end}')
         if fit is not None and fit not in MEDIA_FIT: raise JizuraError(f'fit は {MEDIA_FIT} のどれか: {fit}')
@@ -606,8 +611,16 @@ class Jizura:
         if opacity is not None and not 0 <= float(opacity) <= 1: raise JizuraError(f'opacity は 0〜1: {opacity}')
         for k, v, ok in (('enter', enter, MEDIA_ENTER), ('exit', exit, MEDIA_ENTER), ('hold', hold, MEDIA_HOLD)):
             if v is not None and v not in ok: raise JizuraError(f'{k} は {ok} のどれか: {v}')
+        chroma = None
+        if key is not None or any(v is not None for v in (key_tol, key_soft, key_spill)):
+            k = 'auto' if key in (None, True, 'auto') else str(key)
+            if k != 'auto' and not re.match(r'^#[0-9a-fA-F]{6}$', k): raise JizuraError(f"key は 'auto' か #rrggbb: {key}")
+            chroma = {'color': k.lower()}
+            for name, v, hi, d in (('tol', key_tol, 0.6, 0.1), ('soft', key_soft, 0.6, 0.08), ('spill', key_spill, 1, 0.6)):
+                if v is not None and not 0 <= float(v) <= hi: raise JizuraError(f'key_{name} は 0〜{hi}: {v}')
+                chroma[name] = d if v is None else float(v)
         aid = '' if media == 'none' else await self._asset_id(media)
-        cid = await self._ev(JS_ADD_TIMED, {'assetId': aid, 'start': start, 'end': None if end is None else float(end),
+        cid = await self._ev(JS_ADD_TIMED, {'chroma': chroma, 'assetId': aid, 'start': start, 'end': None if end is None else float(end),
                                              'clipStart': None if clip_start is None else float(clip_start), 'fit': fit, 'track': track,
                                              'rect': rect, 'opacity': None if opacity is None else float(opacity),
                                              'enter': enter, 'exit': exit, 'hold': hold})

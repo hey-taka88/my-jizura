@@ -13,10 +13,12 @@ Linux（Ubuntu 24.04、Python 3.12、Node 22、Playwright 1.56 の Chromium）�
 | text_style_e2e | 行・句の指定、固定した時刻、語の時刻、保存→再読込など既存の回帰テスト |
 | media_e2e | 画像の追加・切替・保存→再読込・短い MP4。CI では書き出しの skip も失敗にする |
 | video_e2e | 合成クリップの時刻、プレビューと書き出しフレームの比較、再読込、PNG |
+| front_e2e | 前景の配置・重なり・透過・クロマキー。同じ画像を異なるキー＋加工で重ねたプレビューと MP4。書き出しの skip も失敗にする |
+| chroma_e2e | WebGL と実際に処理した CPU の画像・動画フレーム、色・しきい値・なだらかさ・spill 変更後の加工キャッシュ、キャンバスの再利用 |
 | smoke_all | 全860部品とメディアの組み合わせ。problems / page errors があれば終了コード1。slow frames は合否に使わない |
 
 既存の TypeScript / lint 設定はないため、今回は構文検査を基盤にする。型検査やスタイルlintが通ったという意味ではない。
-AE/CEP、MCP SDK、前景と加工の専用E2Eは常時CIには含めない。該当部分を変更したPRでは `CLAUDE.md` の追加コマンドを実行し結果を残す。
+AE/CEP、MCP SDK、加工全般の専用E2E（media_look_e2e）は常時CIには含めない。該当部分を変更したPRでは `CLAUDE.md` の追加コマンドを実行し結果を残す。
 書き出しは合成素材による数値検証であり、H.264/AAC の実素材・実機GPU・Safari/Edge・実際の歌唱と歌詞の同期を保証しない。
 
 GitHub Actions は read-only の contents 権限だけを使う。APIキーは不要。PRブランチへの自動修正、承認、マージ、公開は行わない。
@@ -53,7 +55,7 @@ main のブランチ情報は `protected: false`、required status checks は空
 [OpenAI公式手順](https://developers.openai.com/codex/integrations/github/)に従い、
 [Codex settings](https://app.chatgpt.com/settings/code-review) でこのリポジトリの Automatic review、Personal preferences、Review trigger を所有者が確認する。
 必要な時点でレビューが動かなければ、PRに `@codex review` とコメントして依頼できる。
-このPRはdraftのままなので、Readyへの変更を契機とするレビューはまだ起動しない。
+Readyへの変更を契機とする設定では、draftの作成だけでは自動レビューは起動しない。draftでも手動の `@codex review` は依頼できる。
 `AGENTS.md` の Code Review Rules はレビュー観点を伝えるもので、自動レビューを有効化する設定ではない。
 APIキーを使う別のCodex Actionは追加しない。新たなアプリ・権限・課金の導入が必要なら事前に所有者へ相談する。
 

@@ -37,6 +37,8 @@ def browser_checks():
         ('text_style_e2e.py', ['--browser', 'chromium']),
         ('media_e2e.py', ['--require-export']),
         ('video_e2e.py', []),
+        ('front_e2e.py', ['--browser', 'chromium', '--require-export']),
+        ('chroma_e2e.py', ['--browser', 'chromium']),
     ):
         run(sys.executable, f'dev/{script}', *args)
     run(sys.executable, 'dev/build_test.py', 'all', '--all-packs')
