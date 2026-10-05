@@ -164,9 +164,11 @@ function renderList() {
     const li = document.createElement('li'); li.className = a ? '' : 'missing';
     li.title = a ? `${meta.name}（${meta.w}×${meta.h}）` : L(`${meta.name}：このブラウザにデータがありません。もう一度追加してください`, `${meta.name}: not in this browser. Add it again.`);
     li.innerHTML = `<canvas width="160" height="90"></canvas><span class="no">${i + 1}</span>${meta.type === 'video' ? `<span class="dur">▶ ${(+meta.duration || 0).toFixed(1)}s</span>` : ''}<span class="nm">${esc(meta.name)}</span>
-      <span class="acts"><button class="up" title="${L('前へ', 'Earlier')}" aria-label="${L('前へ', 'Earlier')}">←</button><button class="del" title="${L('外す', 'Remove')}" aria-label="${L(`${meta.name} を外す`, `Remove ${meta.name}`)}">✕</button></span>`;
+      <span class="acts"><button class="fr" title="${L('歌詞の上（前景）に重ねる', 'Put it over the lyrics')}" aria-label="${L(`${meta.name} を前景に置く`, `Put ${meta.name} over the lyrics`)}">${L('前', 'Over')}</button><button class="up" title="${L('前へ', 'Earlier')}" aria-label="${L('前へ', 'Earlier')}">←</button><button class="del" title="${L('外す', 'Remove')}" aria-label="${L(`${meta.name} を外す`, `Remove ${meta.name}`)}">✕</button></span>`;
     thumb(li.querySelector('canvas'), a);
     li.querySelector('.del').addEventListener('click', () => removeAsset(meta.id));
+    li.querySelector('.fr').addEventListener('click', () => { if (J.mediaPlace) J.mediaPlace.place(meta.id); });
+    li.querySelector('.fr').disabled = !a;
     li.querySelector('.up').addEventListener('click', () => moveAsset(meta.id, -1));
     li.querySelector('.up').disabled = i === 0;
     ul.appendChild(li);
@@ -244,6 +246,7 @@ J.mediaUI = {
     const sec = section();
     anchor.parentNode.insertBefore(sec, anchor);
     bind(sec);
+    if (J.mediaPlace) J.mediaPlace.init(a, sec);                     // 前景の配置編集 (11z_media_place.js)
     // the sound of a video file can be the song (decodeAudioData reads the audio track of MP4 / WebM)
     const au = $('audioFile'); if (au && !/video/.test(au.accept)) au.accept += ',video/mp4,video/webm,.mp4,.m4v,.webm,.mov';
     lastProject = S.project; syncControls(); restore();
@@ -262,6 +265,7 @@ J.mediaUI = {
     if (held.length) { for (const k of held) M.unlockLine(S.project, k); api.replan(); return; }
     if (S.project !== lastProject) { lastProject = S.project; listKey = ''; note(''); restore(); }   // another project was opened / reset
     syncControls(); renderList();
+    if (J.mediaPlace) J.mediaPlace.onPlan();
   },
   /* the picture selector of one lyric line (only when the project has pictures) */
   lineRow(li, ln, i) {
@@ -290,8 +294,15 @@ J.mediaUI = {
   // for tools/jizura_driver.py (the CLI / MCP server): the same steps as choosing files / ✕ in the panel
   addFiles: fileList => addFiles(fileList),
   remove: id => removeAsset(id),
-  /* the pictures as a thin strip along the bottom of the cut band */
+  /* the pictures as a thin strip along the bottom of the cut band (the ones over the lyrics: thin lines along its top) */
   drawLane(x, X, w, top, bot, dpr) {
+    const F = S && S.plan && S.plan.media && S.plan.media.front;
+    if (F && F.cuts.length) F.cuts.forEach((c, i) => {
+      const x0 = X(c.start), x1 = X(c.end);
+      if (x1 < 0 || x0 > w) return;
+      x.fillStyle = `hsla(${J.sid(c.assetId) % 360},65%,60%,0.9)`;
+      x.fillRect(x0, top + (1 + (i % 3) * 3) * dpr, Math.max(1, x1 - x0 - 1), 2 * dpr);
+    });
     const P = S && S.plan && S.plan.media && S.plan.media.back;
     if (!P || !P.cuts.length) return;
     const y = bot - 5 * dpr, hh = 4 * dpr;

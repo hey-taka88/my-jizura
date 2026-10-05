@@ -34,7 +34,10 @@ function resolveTrack(m, k, plan) {
   const out = { cuts: [], opacity: T.opacity, blend: T.blend, dim: T.dim };
   const byLine = new Map(), timed = [];
   for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
-  const next = ids.length ? sequence(ids, A) : null;
+  // a picture placed over the lyrics (a logo, a character) is not also one of the automatic backgrounds
+  const onFront = k === 'back' ? new Set(m.tracks.front.cuts.map(c => c.assetId).filter(Boolean)) : null;
+  const autoIds = onFront && onFront.size ? ids.filter(id => !onFront.has(id)) : ids;
+  const next = autoIds.length ? sequence(autoIds, A) : null;
   const lines = (plan.lines || []).slice().sort((a, b) => a.start - b.start);
   // what each lyric line shows: a picture chosen for that line (own), or the next one of the automatic order
   const auto = [], own = [];
@@ -124,6 +127,7 @@ function resolveTrack(m, k, plan) {
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
       opacity: src ? src.opacity : 1, seed, rect: src && src.rect ? Object.assign({}, src.rect) : null,   // placed by hand (x, y, w, rot)
       chroma: src && src.chroma ? Object.assign({}, src.chroma) : null,                                      // クロマキー
+      id: src && src.id ? src.id : null,                                                                     // the project cut it came from (配置編集)
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
       // パン / 漂う: which way, and where the float starts
