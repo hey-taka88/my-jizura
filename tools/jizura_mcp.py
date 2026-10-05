@@ -282,7 +282,8 @@ async def remove_media(media: str) -> dict:
 @recorded
 async def add_timed_media(media: str, start: float = 0, end: float | None = None, clip_start: float | None = None, fit: str = '',
                           track: str = 'back', x: float | None = None, y: float | None = None, size: float | None = None,
-                          rot: float | None = None, opacity: float | None = None, enter: str = '', exit: str = '', hold: str = '') -> dict:
+                          rot: float | None = None, opacity: float | None = None, enter: str = '', exit: str = '', hold: str = '',
+                          key: str = '', key_tol: float | None = None, key_soft: float | None = None, key_spill: float | None = None) -> dict:
     """Place a picture or clip at a time of the song (seconds) instead of per lyric line — e.g. one background clip under the whole
     song: start=0 and no end (end = the next timed placement, or the end of the song). It covers the automatic per-line pictures in
     that time; a picture chosen for a line (set_line_media) still shows over it, and a clip keeps running on the song's clock (it never
@@ -293,10 +294,15 @@ async def add_timed_media(media: str, start: float = 0, end: float | None = None
     x / y: its centre from the frame centre (-0.5 … 0.5 of the frame = the edges; y < 0 = up), size: its width as a fraction of the
     frame width (0.02 … 4), rot: degrees — any of these places it by hand instead of filling the frame (also on the back track).
     opacity 0 … 1. enter / exit (options()['mediaEnter']) and hold (options()['mediaHold']): its own motion.
+    key: クロマキー — take a colour out of it, e.g. a green-screen clip of a singer over the lyrics: 'auto' (the colour round the
+    picture's edge) or '#rrggbb'. key_tol (0 … 0.6, default 0.1): how close to that colour counts as it — raise it when the screen
+    shows through, lower it when the subject gets holes; key_soft (0 … 0.6, 0.08): the soft edge; key_spill (0 … 1, 0.6): how much
+    green fringe is taken out of the subject. Look at it with preview (get_plan's `timed` shows the colour 'auto' found).
     Check it with preview. Returns its id and every timed placement (with its track)."""
     return await call(lambda jz: jz.add_timed_media(media, start=start, end=end, clip_start=clip_start, fit=fit or None, track=track,
                                                     x=x, y=y, size=size, rot=rot, opacity=opacity, enter=enter or None,
-                                                    exit=exit or None, hold=hold or None))
+                                                    exit=exit or None, hold=hold or None, key=key or None, key_tol=key_tol,
+                                                    key_soft=key_soft, key_spill=key_spill))
 
 
 @mcp.tool()

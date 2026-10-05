@@ -2,7 +2,7 @@
    my-jizura (fork) — media layer: project.media → plan.media
    Deterministic: the same project + lyrics timing always gives the same media cuts.
    plan.media = { lyricBg, back: { cuts, opacity, blend, dim }, front: { … } }
-   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v, rect }
+   cut = { index, assetId, type, start, end, dur, line, anchor (where a clip's clock starts), timed, fit, enter, hold, exit, join, transP, inDur, outDur, dir, treat, opacity, seed, kb, hp, v, rect, chroma }
    join: how it takes over from the picture right before ('fade' / 'cut' / a J.TRANS key), null when nothing touches it
    ============================================================ */
 (() => {
@@ -123,6 +123,7 @@ function resolveTrack(m, k, plan) {
       join, transP, inDur, outDur, dir, treat: own('treat', A.treat || 'none'),
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
       opacity: src ? src.opacity : 1, seed, rect: src && src.rect ? Object.assign({}, src.rect) : null,   // placed by hand (x, y, w, rot)
+      chroma: src && src.chroma ? Object.assign({}, src.chroma) : null,                                      // クロマキー
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
       // パン / 漂う: which way, and where the float starts

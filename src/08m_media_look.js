@@ -61,7 +61,7 @@ M.treated = (asset, src, c, plan, slot = 0) => {
   const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
   if (!sw || !sh) return src;
   const k = Math.min(1, 1280 / sw), cvs = asset.treatCv || (asset.treatCv = []);
-  return paint(cvs[slot] || (cvs[slot] = mk(2, 2)), src, Math.round(sw * k), Math.round(sh * k), kind, T, false);
+  return paint(cvs[slot] || (cvs[slot] = mk(2, 2)), src, Math.round(sw * k), Math.round(sh * k), kind, T, !!c.chroma);   // a keyed clip stays see-through
 };
 
 /* ---------------- 文字の下の暗幕 ---------------- */
