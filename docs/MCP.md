@@ -82,6 +82,7 @@ tool_timeout_sec = 1800
 | `set_text_options` | 長い間奏に曲名を出すか（曲名はプロジェクトに残る） |
 | `get_motion_plan` | 曲の時刻の範囲で、アプリが実際に作ったカットを読む（読むだけで何も変えない）：行（1 始まり）とその中のカット番号・時刻・文字・recap・配置・登場／退場／保持・加工・カメラ・切り替え・背景グラフィック・装飾・params・配色の番号・登場／退場の長さ・seed・固定されているか、と範囲で使われた部品の一覧（`inventory`）。候補（`set_look` の variation / seed）を見比べる、固定した範囲が変わっていないか確かめる、に使う |
 | `lock_motion_palette` | 採用した範囲を固定：範囲にかかる歌詞の行を、今のカット・動き・装飾・**句の開始時刻ごと**固定する（他の行に `set_look` や `set_line_style` をしても変わらない）。`lock=false` で外す（手で決めた句の時刻と、固定のあとに直した時刻は残る）。固定した行に `set_line_style` で位置・大きさ・文字色を変えても、カットと時刻はそのまま。`scheme` で範囲のカットの配色を固定。色（`bg_color` / `text_color` / `sub_color` / `accent_color` / `ghost_a` / `ghost_b`）と `chroma` は**プロジェクト全体**に効く（「配色」パネルと同じ）。基本色を渡すと `scheme` は 0。1 行だけの文字色は `set_line_style(color=…)` |
+| `set_range_style` | 曲の秒の範囲の**見せ方の強さ**：`quiet`（1 行 1 カット・中央に大きく・ぼかして出入り・ゆっくり呼吸。サビのあいだの休み）、`calm`（JIZURA の配置とカットのまま、ぼかして出入り・ゆっくり漂う）、`normal`（自動に戻す）。`quiet` と `calm` は装飾・強いカメラ・画面効果（揺れ・グリッチ・フラッシュなど）・カットのつなぎ効果なし。`layout` / `enter` / `exit` / `hold` / `cam` で範囲全体の部品を 1 つ上書き、`size` で大きさ。範囲の中の固定した行は、強さを当ててから固定し直す。JIZURA は直前に使った部品を避けて選ぶので**範囲の外の行も変わることがある**（`othersChanged` に出る）。残したい範囲は先に `lock_motion_palette` で固定しておく |
 | `set_word_times` | 今の歌詞はそのままで、語の時刻だけを足す（Suno の `aligned_words`・WhisperX の単語・拡張 LRC・words 付きの `lines` の JSON。例：`timing_master.json`）。行は同じ文字で時刻のいちばん近いものを使う。確かさ 0.1 未満の語と、行の外にある語の時刻は使わない。`without`（語の時刻がない行）・`unmatched`（どの行とも文字が合わない語の時刻）・`weak`（使わなかった語がある行）・`off`（歌う時刻に 0.3 秒より合わせきれなかったカット。行の表示が歌より短いときなど）を返す。ファイルの時刻を直して呼び直せばそのまま反映される |
 | `relink_media` | 開いたプロジェクトで読み込まれていない素材（`missing`）を、フォルダから中身で探して戻す（名前が変わっていても見つかる） |
 | `set_media_options` | 画像の並び・動き（寄る・流す・漂う・拍で脈打つ…）・つなぎ（クロスフェード・切り替え効果）・登場退場・加工（モノクロ・2 色トーン…）・暗さ・文字の下の暗幕、短い動画の伸ばし方（ループ・往復・止める・拍で頭出し） |
@@ -142,7 +143,7 @@ python3 tools/jizura_cli.py plan --project out/mv.jizura.json --media pics/
 python3 tools/jizura_cli.py info
 ```
 
-ほかの指定：`--line-style 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1`（行の見た目を固定。`2:cut_times=1.6` で 2 つ目の句を 1.6 秒後に、`4.2:layout=vcols` で 4 行目の 2 カット目だけ）、`--word-times timing_master.json`（歌詞はそのままで語の時刻だけを足す）、`--no-interlude-title`、`--relink 素材フォルダ`（`--project` の素材を戻す）、`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
+ほかの指定：`--line-style 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1`（行の見た目を固定。`2:cut_times=1.6` で 2 つ目の句を 1.6 秒後に、`4.2:layout=vcols` で 4 行目の 2 カット目だけ）、`--word-times timing_master.json`（歌詞はそのままで語の時刻だけを足す）、`--range-style 33.3-42.6=quiet`（その秒の範囲の見せ方の強さ。`calm` / `normal` も。何度でも）、`--no-interlude-title`、`--relink 素材フォルダ`（`--project` の素材を戻す）、`--line-media 3=sunset.jpg`（何度でも）、`--timed-media bg.mp4@0-`（曲全体に背景動画。`city.jpg@30-45` のように区間も可）、`--dim 0.4`、`--hold pan`、`--trans mix`、`--enter slide`、`--treat duotone`、`--scrim always`、`--media-omakase`、`--extend pingpong`、`--variation 2`、`--style noir`、
 `--res 720`、`--fps 30`、`--range 30-45`（その秒だけ）、`--no-audio`、`--force`（上書き）。一覧は `python3 tools/jizura_cli.py render -h`。
 
 ## うまくいかないとき

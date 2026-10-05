@@ -9,7 +9,7 @@
 H.264 の MP4（AI 動画の多く）を読むには Google Chrome か Edge が入っていること（自動で使います）。
 既存のファイルは上書きしません（--force で上書き）。
 """
-import argparse, asyncio, json, os, sys
+import argparse, asyncio, json, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from jizura_driver import Jizura, JizuraError, ASPECTS, RES, FPS, QUALITY, MEDIA_ORDER, MEDIA_HOLD, MEDIA_FIT, MEDIA_ENTER, MEDIA_TREAT, MEDIA_SCRIM, VIDEO_EXTEND, VIDEO_RATES, VIDEO_BEATS
@@ -47,6 +47,8 @@ def common(p):
     g.add_argument('--line-style', action='append', default=[], metavar='行[.カット]:キー=値,…',
                    help='行の見た目を固定（例 3:layout=center,y=-0.2,size=1.4,color=#ffffff,decor=none,lock=1、2:cut_times=1.6、4.2:layout=vcols）')
     g.add_argument('--no-interlude-title', action='store_true', help='間奏に曲名を出さない（曲名はプロジェクトに残る）')
+    g.add_argument('--range-style', action='append', default=[], metavar='開始-終了=quiet|calm|normal',
+                   help='曲の秒の範囲の見せ方の強さ（例：33.3-42.6=quiet）。何度でも')
     g = p.add_argument_group('画像・動画（続き）')
     g.add_argument('--timed-media', action='append', default=[], metavar='画像@開始-終了',
                    help='曲の時刻で置く画像・動画（例 bg.mp4@0- で曲全体、city.jpg@30-45）。行の切り替えで頭に戻らない。何度でも')
@@ -91,6 +93,10 @@ async def setup(jz, a, aspect):
     if a.relink:
         r = await jz.relink_media(a.relink); log(f'再リンク: {len(r["relinked"])} 件' + (f'（見つからない：{", ".join(r["missing"])}）' if r['missing'] else ''))
     if a.no_interlude_title: await jz.set_text_options(interlude_title=False)
+    for spec in a.range_style:
+        m = re.match(r'^\s*([\d.]+)\s*-\s*([\d.]+)\s*=\s*(quiet|calm|normal)\s*$', spec)
+        if not m: raise SystemExit(f'--range-style は 開始-終了=quiet|calm|normal（例：33.3-42.6=quiet）: {spec}')
+        r = await jz.set_range_style(float(m[1]), float(m[2]), tone=m[3]); log(f'見せ方の強さ {m[3]}: {r["lines"]} 行目')
     for spec in a.line_style:
         head, _, body = spec.partition(':')
         ln, _, ct = head.partition('.')
