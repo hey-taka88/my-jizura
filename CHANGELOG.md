@@ -12,6 +12,7 @@ JIZURA のバージョンは `メジャー.マイナー.パッチ` の形で付�
 
 本家（852wa/JIZURA）から分かれたあとの変更はここに書きます。本家の節はそのまま残します。計画は [docs/PLAN.md](docs/PLAN.md)。
 
+- 2026-10-05：PR 時の Linux 自動チェックを追加（全言語ビルド・構文・生成 HTML の一致、既存の歌詞／固定時刻／画像／動画／描画テスト）。構文と描画 smoke の失敗を終了コードに反映し、CI の画像テストでは MP4 書き出しの skip も失敗にする。Codex 向け `AGENTS.md` と共通の検証・レビュー運用 `docs/CI.md` を追加。
 - 2026-09-30：upstream v0.10.0 を履歴ごと取り込み。`docs/PLAN.md`（画像・動画レイヤーの計画）、`docs/IDEAS.md`（機能アイデア）、`CLAUDE.md`（エージェント向け作業ルール）を追加。本家の Search Console 用ファイルを削除。
 - 2026-09-30：主用途（AI 生成曲の MV）を確認し、`docs/IDEAS.md` に G 節と優先順位、`docs/PLAN.md` に Phase 1.5（歌詞タイミングの取り込み）と Phase 2 のクリップ延長要件を追加。
 - 2026-09-30：Phase 0.5。リポジトリを公開し、canonical・sitemap の URL をこのフォークの Pages（`https://hey-taka88.github.io/my-jizura/`）に変更。テスト用の `dev/requirements.txt` と、Claude Code on the web で自動でテスト環境を入れる SessionStart フックを追加。`.gitignore` にテストの出力先を追加。

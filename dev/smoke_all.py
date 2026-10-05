@@ -89,4 +89,7 @@ async def main():
         print('slow frames', len(out['slow']), out['slow'][:60])
         print('page errors', errs[:5])
         await b.close()
-asyncio.run(main())
+        return 1 if out['problems'] or errs else 0
+
+if __name__ == '__main__':
+    sys.exit(asyncio.run(main()))
