@@ -250,7 +250,8 @@ async def main():
                 try:
                     await pg.wait_for_function('(reds) => previewRGB().every((rgb,i)=>Math.abs(rgb[0]-reds[i])<4)',arg=expected,timeout=500)
                 except Exception: pass
-                moved=await ev('() => ({t:J.ui.t,rgb:previewRGB()})')
+                # Keep the parallel fix's captured-time key as diagnostics; expected pixels stay independent.
+                moved=await ev("() => {const a=J.mediaAssets.get(J.ui.plan.media.front.cuts[0].assetId);return {t:J.ui.t,rgb:previewRGB(),key:a.preview&&a.preview.key};}")
                 ok(all(abs(moved['rgb'][i][0]-red)<4 for i,red in enumerate(expected)),
                    f'playback discards stalled frames (left overlap: {leave_overlap}) {moved}')
                 await ev('() => {J.uiApi.pause();window.restorePreviewFrame();delete window.restorePreviewFrame;J.uiApi.seek(.5);}')
