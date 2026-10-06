@@ -60,6 +60,7 @@ function live(a) {
   a.lastUse = performance.now();
   if (a.live) return;
   delete a.el.frameCheckFailedAt;
+  delete a.el.pendingPresentation;
   a.el.src = a.url; a.live = true;
   try { a.el.load(); } catch (e) {}
 }
@@ -166,26 +167,31 @@ async function seekExact(el, time, signal) {
   }
   const tt = J.clamp(time, 0, Math.max(0, el.duration - 1 / 240));
   if (!el.paused) el.pause();
-  if (Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking) return;
-  const before = shown(el), jump = Math.abs(tt - el.currentTime);
-  // A seeked event from a previous seek may already be queued. Only the completed requested seek is readable: setting
-  // currentTime turns seeking on at once, so !seeking tells. Some browsers report the time on the clip's own time grid
-  // (e.g. 1/600 s), so the time itself is only compared loosely.
-  const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 0.01);
-  el.currentTime = tt;
-  await settled;
+  const atTarget = Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking;
+  const pending = el.pendingPresentation && el.pendingPresentation.time === tt ? el.pendingPresentation : null;
+  const before = pending ? pending.before : shown(el), jump = pending ? pending.jump : Math.abs(tt - el.currentTime);
+  const withinFrame = before && before.dur > 0 && tt >= before.ts && tt < before.ts + before.dur;
+  if (atTarget && !el.pendingPresentation && (!before || !before.dur || withinFrame)) return;
+  // Preserve this across aborts: currentTime/seeked can reach the target before its pixels are presented.
+  el.pendingPresentation = { time: tt, before, jump };
+  if (!atTarget) {
+    // Ignore old queued seeked events, allowing browser time-grid rounding (e.g. 1/600 s).
+    const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 0.01);
+    el.currentTime = tt;
+    await settled;
+  }
   // 'seeked' can precede presentation. Even a short seek across the shown frame's timestamp interval needs a new frame.
   // Without its duration, retain the conservative long-jump check. Slow decoding gets the normal seek timeout.
-  if (!before) return;
-  if (before.dur > 0 ? tt >= before.ts && tt < before.ts + before.dur : jump <= 0.5) return;
+  if (!before || (before.dur > 0 ? withinFrame : jump <= 0.5)) { delete el.pendingPresentation; return; }
   const deadline = performance.now() + 15000;
   while (performance.now() < deadline) {
     const now = shown(el);
-    if (!now || Math.abs(now.ts - before.ts) > 1e-6) return;
+    if (!now || Math.abs(now.ts - before.ts) > 1e-6) { delete el.pendingPresentation; return; }
     await new Promise(r => setTimeout(r, 4));
     if (signal && signal.aborted) throw new Error('aborted');
   }
   el.frameCheckFailedAt = before.ts;
+  delete el.pendingPresentation;
   throw new Error('timeout presenting video frame at ' + tt);
 }
 const capKey = time => Math.round(time * 1000);
