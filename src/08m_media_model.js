@@ -60,6 +60,7 @@ function asset(a) {
   if (!isObj(a) || !M.ID.test(a.id) || !M.TYPES.includes(a.type)) return null;
   const o = { id: a.id, name: str(a.name, 160) || a.id, type: a.type, w: int(a.w, 1, 32768, 1), h: int(a.h, 1, 32768, 1), size: int(a.size, 0, 2 ** 40, 0) };
   if (a.type === 'video') o.duration = num(a.duration, 0, 86400, 0);
+  if (a.role === 'dancer') o.role = 'dancer';            // used by かんたん「ダンス動画を重ねる」: never an automatic background
   return o;
 }
 function cut(c) {

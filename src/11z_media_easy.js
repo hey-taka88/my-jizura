@@ -103,15 +103,11 @@ function rectFor(meta, pos, s, bottom, rot, x) {
   return { x: x != null ? x : POS[pos] || 0, y: r3(J.clamp(bottom - s / 2, -1, 1)), w: r3(J.clamp(s * H * meta.w / (meta.h * W), 0.02, 4)), rot: rot || 0 };
 }
 function commit(msg) { S.project.media = M.normalize(media()); api.replan(); if (msg) api.toast(msg); }
-/* a clip that is no longer the dancer and not used anywhere else leaves the list (and this browser's copy): otherwise it would
-   become one of the automatic backgrounds (a green screen over the whole frame). → whether it went */
-function drop(id) {
-  const m = media();
-  if (!id || M.TRACKS.some(k => m.tracks[k].cuts.some(c => c.assetId === id))) return false;
-  m.assets = m.assets.filter(a => a.id !== id);
-  found.delete(id);
-  M.remove(id).catch(e => console.warn('media: easy dance remove', e));
-  return true;
+/* a clip read for a project that was closed meanwhile: not kept in this browser (unless the open project has it) */
+function forget(project, before) {
+  const m = project && project.media, open = new Set(((S.project.media || {}).assets || []).map(a => a.id));
+  if (!m || !m.assets) return;
+  for (const a of m.assets) if (!before.has(a.id) && !open.has(a.id)) M.remove(a.id).catch(e => console.warn('media: easy dance forget', e));
 }
 /* the rect is in parts of the frame's width and height: after another 画面比 the dancer keeps its height and stands on the same line */
 function follow() {
@@ -132,12 +128,12 @@ function use(assetId) {
   const meta = M.assetById(S.project, assetId);
   if (!meta || !J.mediaPlace) return null;
   const d = detect(assetId);
+  meta.role = 'dancer';                              // never one of the automatic backgrounds (08m_media_plan.js), also once taken off
   let c = dancer();
   const first = !c;
   if (c) {                                           // another clip in the same place: same position and height
-    const om = metaOf(c), s = sizeOf(c, om), b = bottomOf(c, om), old = c.assetId;
+    const om = metaOf(c), s = sizeOf(c, om), b = bottomOf(c, om);
     c.assetId = assetId;
-    if (old !== assetId) drop(old);
     c.rect = rectFor(meta, posOf(c), s, b, c.rect ? c.rect.rot : 0, c.rect ? c.rect.x : null);
   } else {
     const id = J.mediaPlace.place(assetId);
@@ -166,12 +162,12 @@ async function add(files) {
   try {
     const project = S.project, before = new Set(media().assets.map(a => a.id));
     const res = await J.mediaUI.addFiles([f]);
-    if (S.project !== project) return null;          // another project was opened meanwhile: this result is not for it
+    if (S.project !== project) { forget(project, before); return null; }   // another project was opened meanwhile: not for it
     const m = media();
     let a = m.assets.find(x => !before.has(x.id));
     // nothing new and nothing wrong: the same clip is already in the list (its id is the hash of its bytes; a name proves nothing)
     if (!a && res && !res.added.length && !res.errors.length && !res.skipped.length && M.hashBytes) { const id = await M.hashBytes(await f.arrayBuffer()); a = m.assets.find(x => x.id === id); }
-    if (S.project !== project) return null;
+    if (S.project !== project) { forget(project, before); return null; }
     if (!a || !J.mediaAssets.has(a.id)) {
       const vbad = res && res.errors && res.errors.some(e => e.reason === 'video');
       api.toast(vbad ? L('この動画はこのブラウザで再生できませんでした。H.264 の MP4 か WebM に変換してください', 'This browser cannot play this clip. Convert it to H.264 MP4 or WebM.')
@@ -207,8 +203,7 @@ function setCenter(on) {
 function remove() {
   const c = dancer(); if (!c) return;
   front().cuts = front().cuts.filter(x => x !== c);
-  commit(drop(c.assetId) ? L('ダンス動画を外しました', 'Removed')
-    : L('ダンス動画を外しました（ほかの行でも使っているので「画像・動画」に残しています）', 'Removed (still used elsewhere, so it stays under 「画像・動画」)'));
+  commit(L('ダンス動画を外しました（素材は「画像・動画」に残っています。背景の自動切り替えには使いません）', 'Removed (the clip stays under 「画像・動画」, never as an automatic background)'));
 }
 
 function render() {

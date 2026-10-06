@@ -52,8 +52,9 @@ function resolveTrack(m, k, plan) {
   const out = { cuts: [], opacity: T.opacity, blend: T.blend, dim: T.dim };
   const byLine = new Map(), timed = [];
   for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
-  // a picture placed over the lyrics (a logo, a character) is not also one of the automatic backgrounds
-  const onFront = k === 'back' ? new Set(m.tracks.front.cuts.map(c => c.assetId).filter(Boolean)) : null;
+  // a picture placed over the lyrics (a logo, a character) is not also one of the automatic backgrounds, nor a clip that was the
+  // dancer of かんたん (a green screen), also after it was taken off by any way
+  const onFront = k === 'back' ? new Set(m.tracks.front.cuts.map(c => c.assetId).filter(Boolean).concat(m.assets.filter(a => a.role === 'dancer').map(a => a.id))) : null;
   const autoIds = onFront && onFront.size ? ids.filter(id => !onFront.has(id)) : ids;
   const next = autoIds.length ? sequence(autoIds, A) : null;
   const lines = (plan.lines || []).slice().sort((a, b) => a.start - b.start);
@@ -218,7 +219,7 @@ M.backUnder = (project, li, t0, t1) => {
   const A = m.autoFill && m.autoFill.back;
   if (!A || A.mode !== 'perLine') return false;
   const onFront = new Set(((m.tracks.front && m.tracks.front.cuts) || []).map(c => c.assetId).filter(Boolean));
-  if (!m.assets.some(a => !onFront.has(a.id))) return false;
+  if (!m.assets.some(a => !onFront.has(a.id) && a.role !== 'dancer')) return false;   // the same pool as resolveTrack
   // the automatic picture shows in whatever part of [t0, t1) no placed cut takes
   let from = t0;
   for (const x of spans.sort((a, b) => a.s - b.s)) { if (x.s > from + 0.02) return true; from = Math.max(from, x.e); }

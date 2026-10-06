@@ -5,8 +5,8 @@ usage: python3 build.py && python3 dev/easy_dance_e2e.py [--browser chromium]
   out (the background picture shows through), the lyrics split to the sides · it is not one of the automatic backgrounds ·
   位置 / 大きさ keep it on the bottom · 背景 「抜かない」 shows the screen again · another 画面比 keeps its height and its feet on
   the bottom · 差し替え with a transparent PNG keeps its place and drops the key, the clip it replaced leaves the list (never a
-  background) · what is found: alpha (also a clip's thumbnail with transparency), green, blue, plain · ✕ takes it off and its clip
-  leaves the list · a broken file named like a clip in the list is refused · the same clip under another name is the one in the
+  background, also when it is taken off in 詳細's list) · what is found: alpha (also a clip's thumbnail with transparency), green, blue, plain · ✕ takes it off (its clips stay in
+  the list, marked, never a background) · a clip read while another project was opened is dropped and not kept · a broken file named like a clip in the list is refused · the same clip under another name is the one in the
   list · the same project gives the same plan.
 Exit code 0 = all checks passed."""
 import asyncio, base64, os, sys, tempfile
@@ -147,8 +147,8 @@ async def main():
            f'差し替え with a transparent PNG: same place and height, no key ({R})')
         names = await ev("() => J.ui.project.media.assets.map(a => a.name)")
         back = await ev(BACK)
-        ok(len(await ev("() => J.ui.project.media.tracks.front.cuts")) == 2 and names == ['blue.png', 'logo.png', 'figure.png'] and did not in back and back,
-           f'still one picture over the lyrics; the green clip it replaced leaves the list and never becomes a background ({names}, back {back})')
+        ok(len(await ev("() => J.ui.project.media.tracks.front.cuts")) == 2 and names == ['blue.png', 'logo.png', 'dance_gb.mp4', 'figure.png'] and did not in back and back,
+           f'still one picture over the lyrics; the green clip it replaced stays in the list but never becomes a background ({names}, back {back})')
         await jz.add_media([os.path.join(pics, 'bluescreen.png'), os.path.join(pics, 'photo.png')])
         ids = await ev("() => Object.fromEntries(J.ui.project.media.assets.map(a => [a.name, a.id]))")
         found.update(await ev("(ids) => ({ figure: J.mediaEasy.detect(ids['figure.png']).kind, blue: J.mediaEasy.detect(ids['bluescreen.png']).kind, photo: J.mediaEasy.detect(ids['photo.png']).kind })", ids))
@@ -161,11 +161,18 @@ async def main():
         same = await ev("() => JSON.stringify(J.plan(J.ui.project, null).media) === JSON.stringify(J.plan(J.ui.project, null).media)")
         ok(same, 'the same project gives the same plan')
         print('remove')
+        await ev("(id) => document.querySelector(`#mediaFront .mf-row[data-id=\"${id}\"] .del`).click()", d2['id'])   # ✕ in 詳細's list
+        back = await ev(BACK)
+        ok(await ev("() => J.mediaEasy.dancer()") is None and set(back) == {ids['blue.png']}, f"✕ in 詳細's list: the clip that was the dancer is still no background ({back})")
+        await ev("(id) => J.mediaEasy.use(id)", ids['figure.png'])
         await pg.click('#easyDance .dz-del')
         left = await ev("() => ({ front: J.ui.project.media.tracks.front.cuts.length, assets: J.ui.project.media.assets.map(a => a.name), pick: /動画を選ぶ/.test(document.getElementById('easyDance').textContent) })")
         back = await ev(BACK)
-        ok(left == {'front': 1, 'assets': ['blue.png', 'logo.png'], 'pick': True} and set(back) == {ids['blue.png']} and await ev(LOGO, logo) == logo0,
-           f'✕ takes it off, the clips it used leave the list (no stray background), the button comes back ({left}, back {back})')
+        ok(left == {'front': 1, 'assets': ['blue.png', 'logo.png', 'dance_gb.mp4', 'figure.png', 'bluescreen.png', 'photo.png'], 'pick': True}
+           and set(back) == {ids['blue.png']} and await ev(LOGO, logo) == logo0,
+           f'✕ takes it off, its clips stay in the list but none is a background, the logo stays, the button comes back ({left}, back {back})')
+        saved = await ev("() => J.media.normalize(JSON.parse(JSON.stringify(J.ui.project.media))).assets.filter(a => a.role === 'dancer').map(a => a.name)")
+        ok(saved == ['dance_gb.mp4', 'figure.png', 'bluescreen.png', 'photo.png'], f'that is kept in the project ({saved})')
         print('a clip already in the list')
         await jz.add_media([clip])                                                      # the green clip as one of the pictures
         await pg.set_input_files('#easyDance .dz-file', os.path.join(pics, 'figure.png'))
@@ -181,7 +188,7 @@ async def main():
         await pg.set_input_files('#easyDance .dz-file', again)
         await pg.wait_for_function("(id) => J.mediaEasy.dancer().assetId === id", arg=did, timeout=15000)
         n = await ev("() => J.ui.project.media.assets.map(a => a.name)")
-        ok(n == ['blue.png', 'logo.png', 'dance_gb.mp4'], f"the same clip under another name uses the one in the list ({n})")
+        ok(len(n) == 6, f"the same clip under another name uses the one in the list ({n})")
         await ev("() => J.mediaEasy.remove()")
         await ev("() => { const el = document.getElementById('eCenter'); el.checked = false; el.dispatchEvent(new Event('change')); }")
         plan1 = await ev("() => JSON.stringify(J.ui.plan.cuts.map(c => [c.start, c.layout]))")
@@ -189,11 +196,19 @@ async def main():
         print('another project opened while a clip loads')
         await ev("""() => { const orig = J.mediaUI.addFiles; let go; window.__gate = new Promise(r => { go = r; }); window.__go = go;
           J.mediaUI.addFiles = async files => { J.mediaUI.addFiles = orig; const r = await orig(files); await window.__gate; return r; };
-          window.__late = J.mediaEasy.add([new File([new Uint8Array(64)], 'late.png', { type: 'image/png' })]); }""")
+          const cv = document.createElement('canvas'); cv.width = 40; cv.height = 30; cv.getContext('2d').fillRect(0, 0, 20, 30);
+          return new Promise(res => cv.toBlob(async b => { const buf = await b.arrayBuffer(); window.__lateId = await J.media.hashBytes(buf);
+            window.__late = J.mediaEasy.add([new File([buf], 'late.png', { type: 'image/png' })]); res(); }, 'image/png')); }""")
         await jz.new_project(lyrics=lyr)
         await jz.add_media([os.path.join(pics, 'photo.png')])
         r = await ev("async () => { window.__go(); const id = await window.__late; return { id, front: J.ui.project.media.tracks.front.cuts.length, assets: J.ui.project.media.assets.map(a => a.name) }; }")
         ok(r == {'id': None, 'front': 0, 'assets': ['photo.png']}, f'the late result is dropped: the project opened meanwhile is untouched ({r})')
+        LATE = "async () => ({ id: window.__lateId, live: J.mediaAssets.has(window.__lateId), stored: !!(await J.media.storedFile(window.__lateId)) })"
+        for _ in range(50):
+            late = await ev(LATE)
+            if not late['live'] and not late['stored']: break
+            await pg.wait_for_timeout(200)
+        ok(late['id'] and not late['live'] and not late['stored'], f'and the picture read for the closed project is not kept in this browser ({late})')
         errs = list(jz.errors)
         ok(not errs, f'no page errors ({errs[:3]})')
     print('\n' + ('ALL OK' if not fails else f'{len(fails)} FAILED'))
