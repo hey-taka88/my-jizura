@@ -245,6 +245,15 @@ async def main():
               finally {a.el.removeEventListener('seeking',stale);}
             }""")
             ok(not seek_state['seeking'] and seek_state['ready']>=2 and abs(seek_state['time']-.18)<.001,f'early seeked events cannot expose an unfinished frame {seek_state}')
+            # A browser that reports currentTime on the clip's time grid (1/600 s) must not wait out the seek timeout.
+            grid=await ev("""async () => {
+              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),d=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'currentTime');
+              Object.defineProperty(a.el,'currentTime',{configurable:true,get(){return Math.round(d.get.call(this)*600)/600;},set(v){d.set.call(this,v);}});
+              const t0=performance.now();
+              try {const vt=await J.media.prepareFrame(P,1.234,null,c);return {ms:performance.now()-t0,main:vt&&vt.main,cap:!!(vt&&J.media.videoCap(a,vt.main))};}
+              finally {delete a.el.currentTime;}
+            }""")
+            ok(grid['ms']<2000 and grid['cap'],f'a seek reported on a 1/600 s time grid completes without the timeout {grid}')
             await pg.wait_for_function("() => [...J.mediaAssets.values()].every(a=>a.type!=='video'||!a.el.seeking)")
             for time,red in ((2,30),(12,180)):
                 await ev("""(time) => {

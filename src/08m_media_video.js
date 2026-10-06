@@ -135,8 +135,10 @@ async function seekExact(el, time, signal) {
   if (!el.paused) el.pause();
   if (Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking) return;
   const before = shown(el), jump = Math.abs(tt - el.currentTime);
-  // A seeked event from a previous seek may already be queued. Only the completed requested seek is readable.
-  const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 1e-4);
+  // A seeked event from a previous seek may already be queued. Only the completed requested seek is readable: setting
+  // currentTime turns seeking on at once, so !seeking tells. Some browsers report the time on the clip's own time grid
+  // (e.g. 1/600 s), so the time itself is only compared loosely.
+  const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 0.01);
   el.currentTime = tt;
   await settled;
   // 'seeked' can precede presentation. Even a short seek across the shown frame's timestamp interval needs a new frame.
