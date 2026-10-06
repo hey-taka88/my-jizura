@@ -159,6 +159,10 @@ M.prepareFrame = (plan, t, signal, sampleCut) => {
   frameQueue = prepared.catch(() => {});
   return prepared;
 };
+// Preserve a direct promise so the caller reads its capture before the next queued preparation starts.
+M.prepareCut = (plan, c, t, signal) => plan && c && c.type === 'video'
+  ? M.prepareFrame(plan, t, signal, c) : Promise.resolve(null);
+M.releaseVideos = () => { exportUntil = 0; };
 // sampleCut prepares the selected cut even outside its interval, without the export cooldown.
 async function prepareFrame(plan, t, signal, sampleCut) {
   if (!plan || !plan.media) return;
@@ -197,6 +201,7 @@ async function prepareFrame(plan, t, signal, sampleCut) {
       }
     }
     trim(new Set(out.keys()));
+    return sampleCut ? vt : undefined;
   } finally {
     if (sampleCut) sampling--; else exportUntil = performance.now() + 2000;
   }

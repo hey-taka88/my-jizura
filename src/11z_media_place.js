@@ -231,16 +231,17 @@ M.pickColor = async (c, clientX, clientY, signal) => {
     const d = x.getImageData(0, 0, 1, 1).data;
     return '#' + [d[0], d[1], d[2]].map(n => n.toString(16).padStart(2, '0')).join('');
   };
-  const vt = a.type === 'video' && pc ? M.videoTimes(P, pc, t0) : null;
-  if (!vt) return sample(a.type === 'video' ? a.thumb : a.source);
-  // Hold the song at the clicked time and reuse the existing decoders/export captures, including both sides of a loop seam.
+  if (a.type !== 'video' || !pc || !M.videoTimes(P, pc, t0)) return sample(a.type === 'video' ? a.thumb : a.source);
+  // Hold the clicked song time, read this cut's frames (also outside its interval), then return them to the preview.
   J.uiApi.pause();
   if (signal && signal.aborted) return null;
-  await M.prepareFrame(P, t0, signal, pc);
-  if (signal && signal.aborted) return null;
-  const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
-  if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
-  return sample(src, alt, vt.k);
+  try {
+    const vt = await M.prepareCut(P, pc, t0, signal);
+    if (!vt || (signal && signal.aborted)) return null;
+    const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
+    if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
+    return sample(src, alt, vt.k);
+  } finally { M.releaseVideos(); S.need = true; }
 };
 async function onViewClick(e) {
   if (!spoid) return;
