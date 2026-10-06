@@ -219,10 +219,19 @@ async def main():
                 }""")
                 await pg.wait_for_function('() => window.previewPolls>2')
                 await pg.wait_for_function('(t) => J.ui.t>t',arg=2.5 if leave_overlap else 3.3)
-                moved=await ev('() => ({t:J.ui.t,rgb:previewRGB()})')
-                expected=[130,0] if leave_overlap else [180,80]
-                ok(all(abs(moved['rgb'][i][0]-red)<4 for i,red in enumerate(expected)),
-                   f'playback discards stalled frames (left overlap: {leave_overlap}) {moved}')
+                # Wait (bounded) instead of reading one instant: by design a playing shared read may trail the song by up
+                # to a second, and a slow runner can still be finishing the read started after the stall was dropped.
+                if leave_overlap:
+                    done='() => {const rgb=previewRGB();return Math.abs(rgb[0][0]-130)<4&&rgb[1][0]<4;}'
+                else:   # pictures installed for a time past the stalled 1.9 s request, and drawn as those times
+                    done="""() => {const a=J.mediaAssets.get(J.ui.plan.media.front.cuts[0].assetId);if(!a.preview)return false;
+                      const uses=a.preview.key.split('|').map(u=>u.split(':')),m0=+uses[0][1];if(!(m0>2100||m0<400))return false;
+                      const rgb=previewRGB();return uses.every((u,i)=>u[2]!==''||Math.abs(rgb[i][0]-(30+50*Math.floor(+u[1]/1000)))<4);}"""
+                try:
+                    await pg.wait_for_function(done,timeout=3000);settled=True
+                except Exception: settled=False
+                moved=await ev("() => {const a=J.mediaAssets.get(J.ui.plan.media.front.cuts[0].assetId);return {t:J.ui.t,rgb:previewRGB(),key:a.preview&&a.preview.key};}")
+                ok(settled,f'playback discards stalled frames (left overlap: {leave_overlap}) {moved}')
                 await ev('() => {J.uiApi.pause();window.restorePreviewFrame();delete window.restorePreviewFrame;J.uiApi.seek(.5);}')
             await ev('() => {J.ui.project.media.tracks.front.cuts[1].end=14;J.uiApi.replan();}')
             await ev('() => J.uiApi.seek(2)');await preview_ready([130,180])
@@ -344,6 +353,9 @@ async def main():
               finally {window.VideoFrame=Real;J.media.releaseVideos();}
             }""")
             ok(slow['polls']>100 and slow['ms']>300,f'a slow presented frame is awaited beyond 240ms {slow}')
+            # The direct frame reads below must not race the app's own preview loop (it would clear or move the clip
+            # between them): hold it off as an export does, until the recovery check.
+            await ev('() => {window.__exporting=J.ui.exporting;J.ui.exporting=true;}')
             timed_out=await ev("""async () => {
               const S=J.ui,P=S.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),exporting=S.exporting;
               S.exporting=true;await J.media.prepareCut(P,c,3.02);
@@ -383,6 +395,7 @@ async def main():
               return {cap:!!src,red};
             }""")
             ok(recovered['cap'] and abs(recovered['red']-80)<4,f'frame capture recovers once presentation advances {recovered}')
+            await ev('() => {J.ui.exporting=window.__exporting;delete window.__exporting;}')
             # An older seek event may already be queued when a new seek starts. It must not complete the new request.
             seek_state=await ev("""async () => {
               const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
