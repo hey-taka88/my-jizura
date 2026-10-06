@@ -42,6 +42,7 @@ def browser_checks():
         ('place_e2e.py', ['--browser', 'chromium']),
         ('place_regression_e2e.py', ['--browser', 'chromium']),
         ('bundle_e2e.py', ['--browser', 'chromium']),
+        ('calm_e2e.py', ['--browser', 'chromium']),
     ):
         run(sys.executable, f'dev/{script}', *args)
     run(sys.executable, 'dev/build_test.py', 'all', '--all-packs')

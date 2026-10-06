@@ -45,6 +45,7 @@ M.defaults = () => ({
     front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', enter: 'fade', exit: 'fade', trans: 'fade', treat: 'none', video: { extend: 'loop', rate: 1, beats: 4 } },
   },
   lyricBg: 'off',
+  calm: true,                                  // おまかせ: fewer screen-filling layouts over a background picture (08m_media_plan.js)
   scrim: { mode: 'auto', amount: 0.55 },
   text: M.textDefaults ? M.textDefaults() : { interludeTitle: 'show', lines: {} },   // lyric placement / colour by hand (08m_media_text.js)
 });
@@ -123,6 +124,7 @@ M.normalize = m => {
   const tr = isObj(m.tracks) ? m.tracks : {}, af = isObj(m.autoFill) ? m.autoFill : {};
   const sc = isObj(m.scrim) ? m.scrim : {};
   const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg),
+    calm: m.calm === true,                     // a project saved before this setting keeps its look (new projects: on, see defaults)
     scrim: { mode: pick(sc.mode, M.SCRIM, d.scrim.mode), amount: num(sc.amount, 0, 0.9, d.scrim.amount) },
     text: M.normalizeText ? M.normalizeText(m.text) : d.text };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }

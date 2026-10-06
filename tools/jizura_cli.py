@@ -38,6 +38,7 @@ def common(p):
     g.add_argument('--scrim', choices=MEDIA_SCRIM, help='文字の下の暗幕'); g.add_argument('--media-omakase', action='store_true', help='メディアのおまかせ（動き・つなぎ・加工などをまとめて決める）')
     g.add_argument('--fit', choices=MEDIA_FIT); g.add_argument('--dim', type=float, help='暗さ 0〜0.9（文字を読みやすく）')
     g.add_argument('--lyric-bg', action='store_true', help='歌詞側の背景グラフィックも重ねる')
+    g.add_argument('--calm', choices=['on', 'off'], help='画像の上では画面を埋める派手なレイアウトをあまり選ばない（新しいプロジェクトは on）')
     g.add_argument('--shuffle', type=int, help='並びのシード（order=random のとき）')
     g.add_argument('--extend', choices=VIDEO_EXTEND, help='動画が行より短いとき')
     g.add_argument('--rate', type=float, choices=VIDEO_RATES); g.add_argument('--beats', type=int, choices=VIDEO_BEATS)
@@ -83,7 +84,7 @@ async def setup(jz, a, aspect):
         log(f'見た目: {r["styleName"]}・{r["mood"]}' + (f'（テーマ {r["theme"]}）' if r['theme'] else ''))
     if a.media_omakase: r = await jz.media_omakase(); log(f'メディアのおまかせ: {r["summary"]}')
     mo = dict(order=a.order, hold=a.hold, fit=a.fit, dim=a.dim, lyric_bg=True if a.lyric_bg else None, shuffle=a.shuffle, extend=a.extend, rate=a.rate, beats=a.beats,
-              trans=a.trans, enter=a.enter, exit=a.enter, treat=a.treat, scrim=a.scrim)
+              trans=a.trans, enter=a.enter, exit=a.enter, treat=a.treat, scrim=a.scrim, calm=None if a.calm is None else a.calm == 'on')
     if any(v is not None for v in mo.values()): await jz.set_media_options(**mo)
     for s in a.timed_media:
         name, _, rng = s.rpartition('@')

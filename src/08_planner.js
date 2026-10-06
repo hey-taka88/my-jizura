@@ -405,7 +405,7 @@ J.plan = (project, audio) => {
       const Z = zoneOf(li), LW = Z ? Z.w : W, LH = Z ? Z.h : H;       // the frame this cut is laid out in
       const UU = U && !ovAny ? U : null;                              // per-line settings always win over 統一感
       const tech = cutTechOf(ov, k);                                  // このカットだけの指定
-      let layout = ov.layout && J.LAYOUTS[ov.layout] ? ov.layout : pickLayout(rng, st, en, nn, dur, history, emph, u.recap, LH > LW);
+      let layout = ov.layout && J.LAYOUTS[ov.layout] ? ov.layout : pickLayout(rng, J.media ? J.media.calmStyle(st, project, li, cs, ce) : st, en, nn, dur, history, emph, u.recap, LH > LW);   // my-jizura: calmer over pictures
       if (UU) layout = UU.layout(li, layout, { nn, dur, emph, kime, rng, portrait: LH > LW, recap: u.recap });
       let enter = ov.enter && J.ENTER[ov.enter] ? ov.enter : pickEnter(rng, st, en, layout, dur, history, emph, nn);
       let exit = ov.exit && J.EXIT[ov.exit] ? ov.exit : pickExit(rng, st, en, layout, dur, k === units.length - 1, history);

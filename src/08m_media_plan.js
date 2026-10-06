@@ -27,6 +27,24 @@ function sequence(ids, A) {
   return n => perm(Math.floor(n / ids.length))[n % ids.length];
 }
 
+/* the pictures placed at a time of the song → [{ c, s, e, a }] (a = where it was placed: a clip's own clock): an end given, else (back
+   track) the next one's start, else the song end. A cut with no picture ('' = 「なし」, or a picture that is gone) still takes its time:
+   nothing automatic shows there. The back track shows one picture at a time, so a later one takes its time out of an earlier one that
+   is still running (A 0–30 s with B 10–20 s: A, B, then A again from 20 s); the front track's layers may overlap */
+function timedSpans(timed, D, layered) {
+  const spans = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
+    .map((c, i, arr) => ({ c, s: c.start, a: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
+    .filter(x => x.e - x.s > 0.02);
+  if (layered) return spans;
+  let out = [];
+  for (const x of spans) {
+    out = out.flatMap(p => (p.e <= x.s || p.s >= x.e ? [p] : [Object.assign({}, p, { e: x.s }), Object.assign({}, p, { s: x.e })]))
+      .filter(p => p.e - p.s > 0.02);
+    out.push(x);
+  }
+  return out.sort((p, q) => p.s - q.s);
+}
+
 function resolveTrack(m, k, plan) {
   const T = m.tracks[k], A = m.autoFill[k], D = Math.max(0.1, plan.duration || 0);
   const ids = m.assets.map(a => a.id);
@@ -60,9 +78,7 @@ function resolveTrack(m, k, plan) {
   // the front track is layers: its pictures may overlap (a logo all song long, a character for a verse), one without an end stays
   // to the end of the song, and each comes and goes by itself (no つなぎ)
   const layered = k === 'front';
-  const tl = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
-    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
-    .filter(x => x.e - x.s > 0.02);
+  const tl = timedSpans(timed, D, layered);
   const cut = (list, holes) => {                            // the parts of each [start, end) outside the holes
     const out = [];
     for (const g of list) {
@@ -73,7 +89,7 @@ function resolveTrack(m, k, plan) {
     return out;
   };
   let segs = cut(auto, tl).concat(own)
-    .concat(cut(tl.map(x => ({ assetId: x.c.assetId, start: x.s, end: x.e, line: -1, src: x.c, anchor: x.s })), own.map(o => ({ s: o.start, e: o.end }))))
+    .concat(cut(tl.map(x => ({ assetId: x.c.assetId, start: x.s, end: x.e, line: -1, src: x.c, anchor: x.a })), own.map(o => ({ s: o.start, e: o.end }))))
     .filter(s => s.assetId && known.has(s.assetId));
   segs.sort((a, b) => a.start - b.start);
   segs.forEach(s => { s.end = Math.min(s.end, D); });
@@ -186,6 +202,41 @@ M.resolve = (project, plan) => {
   const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off', scrim: Object.assign({}, m.scrim) };
   for (const k of M.TRACKS) out[k] = resolveTrack(m, k, plan);
   return out;
+};
+
+/* おまかせ × pictures: does a background picture show during [t0, t1) of lyric line li? (the order of resolveTrack: a picture
+   chosen for the line, else one placed at a time, else the automatic one). Read from the project, before the lyrics are planned */
+M.backUnder = (project, li, t0, t1) => {
+  const m = project && project.media;
+  if (!m || !m.assets || !m.assets.length || !m.tracks || !m.tracks.back || (J.keyMode && J.keyMode(project))) return false;
+  const known = new Set(m.assets.map(a => a.id)), cuts = m.tracks.back.cuts || [];
+  let own = null; for (const c of cuts) if (c.lineRef && c.lineRef.line === li) own = c;   // the last one, as resolveTrack's byLine
+  if (own) return !!own.assetId && known.has(own.assetId);                          // 「なし」 = nothing under this line
+  // placed at a time: a picture there counts; any placed cut (also 「なし」) takes its span from the automatic pictures
+  const spans = timedSpans(cuts.filter(c => !c.lineRef), Infinity, false).filter(x => x.s < t1 && x.e > t0);
+  if (spans.some(x => x.c.assetId && known.has(x.c.assetId))) return true;
+  const A = m.autoFill && m.autoFill.back;
+  if (!A || A.mode !== 'perLine') return false;
+  const onFront = new Set(((m.tracks.front && m.tracks.front.cuts) || []).map(c => c.assetId).filter(Boolean));
+  if (!m.assets.some(a => !onFront.has(a.id))) return false;
+  // the automatic picture shows in whatever part of [t0, t1) no placed cut takes
+  let from = t0;
+  for (const x of spans.sort((a, b) => a.s - b.s)) { if (x.s > from + 0.02) return true; from = Math.max(from, x.e); }
+  return t1 - from > 0.02;
+};
+/* the style the planner picks a cut's layout with: over a background picture (and with 「画像の上では控えめに」 on), the layouts that
+   fill the screen (busy) are rarely chosen. Same number of random draws; without a picture the style itself (so nothing changes) */
+const CALM_BUSY = 0.12, calmCache = new WeakMap();
+M.calmStyle = (st, project, li, t0, t1) => {
+  if (!st || !project || !project.media || project.media.calm !== true || !M.backUnder(project, li, t0, t1)) return st;
+  let c = calmCache.get(st);
+  if (!c) {
+    const lay = Object.assign({}, st.bias && st.bias.layout);
+    for (const k of J.LAYOUT_ORDER || []) { const L = J.LAYOUTS[k]; if (L && L.busy) lay[k] = (lay[k] != null ? lay[k] : L.w ?? 1) * CALM_BUSY; }
+    c = Object.assign(Object.create(st), { bias: Object.assign({}, st.bias, { layout: lay }) });
+    calmCache.set(st, c);
+  }
+  return c;
 };
 
 /* every cut showing at time t (the front track's layers overlap; the back track shows one) */

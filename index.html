@@ -3837,7 +3837,7 @@ J.plan = (project, audio) => {
       const Z = zoneOf(li), LW = Z ? Z.w : W, LH = Z ? Z.h : H;       // the frame this cut is laid out in
       const UU = U && !ovAny ? U : null;                              // per-line settings always win over 統一感
       const tech = cutTechOf(ov, k);                                  // このカットだけの指定
-      let layout = ov.layout && J.LAYOUTS[ov.layout] ? ov.layout : pickLayout(rng, st, en, nn, dur, history, emph, u.recap, LH > LW);
+      let layout = ov.layout && J.LAYOUTS[ov.layout] ? ov.layout : pickLayout(rng, J.media ? J.media.calmStyle(st, project, li, cs, ce) : st, en, nn, dur, history, emph, u.recap, LH > LW);   // my-jizura: calmer over pictures
       if (UU) layout = UU.layout(li, layout, { nn, dur, emph, kime, rng, portrait: LH > LW, recap: u.recap });
       let enter = ov.enter && J.ENTER[ov.enter] ? ov.enter : pickEnter(rng, st, en, layout, dur, history, emph, nn);
       let exit = ov.exit && J.EXIT[ov.exit] ? ov.exit : pickExit(rng, st, en, layout, dur, k === units.length - 1, history);
@@ -5199,6 +5199,7 @@ M.defaults = () => ({
     front: { mode: 'off', order: 'sequential', seed: 1, fit: 'contain', hold: 'still', enter: 'fade', exit: 'fade', trans: 'fade', treat: 'none', video: { extend: 'loop', rate: 1, beats: 4 } },
   },
   lyricBg: 'off',
+  calm: true,                                  // おまかせ: fewer screen-filling layouts over a background picture (08m_media_plan.js)
   scrim: { mode: 'auto', amount: 0.55 },
   text: M.textDefaults ? M.textDefaults() : { interludeTitle: 'show', lines: {} },   // lyric placement / colour by hand (08m_media_text.js)
 });
@@ -5277,6 +5278,7 @@ M.normalize = m => {
   const tr = isObj(m.tracks) ? m.tracks : {}, af = isObj(m.autoFill) ? m.autoFill : {};
   const sc = isObj(m.scrim) ? m.scrim : {};
   const out = { version: 1, assets, tracks: {}, autoFill: {}, lyricBg: pick(m.lyricBg, M.LYRIC_BG, d.lyricBg),
+    calm: m.calm === true,                     // a project saved before this setting keeps its look (new projects: on, see defaults)
     scrim: { mode: pick(sc.mode, M.SCRIM, d.scrim.mode), amount: num(sc.amount, 0, 0.9, d.scrim.amount) },
     text: M.normalizeText ? M.normalizeText(m.text) : d.text };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
@@ -5327,6 +5329,24 @@ function sequence(ids, A) {
   return n => perm(Math.floor(n / ids.length))[n % ids.length];
 }
 
+/* the pictures placed at a time of the song → [{ c, s, e, a }] (a = where it was placed: a clip's own clock): an end given, else (back
+   track) the next one's start, else the song end. A cut with no picture ('' = 「なし」, or a picture that is gone) still takes its time:
+   nothing automatic shows there. The back track shows one picture at a time, so a later one takes its time out of an earlier one that
+   is still running (A 0–30 s with B 10–20 s: A, B, then A again from 20 s); the front track's layers may overlap */
+function timedSpans(timed, D, layered) {
+  const spans = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
+    .map((c, i, arr) => ({ c, s: c.start, a: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
+    .filter(x => x.e - x.s > 0.02);
+  if (layered) return spans;
+  let out = [];
+  for (const x of spans) {
+    out = out.flatMap(p => (p.e <= x.s || p.s >= x.e ? [p] : [Object.assign({}, p, { e: x.s }), Object.assign({}, p, { s: x.e })]))
+      .filter(p => p.e - p.s > 0.02);
+    out.push(x);
+  }
+  return out.sort((p, q) => p.s - q.s);
+}
+
 function resolveTrack(m, k, plan) {
   const T = m.tracks[k], A = m.autoFill[k], D = Math.max(0.1, plan.duration || 0);
   const ids = m.assets.map(a => a.id);
@@ -5360,9 +5380,7 @@ function resolveTrack(m, k, plan) {
   // the front track is layers: its pictures may overlap (a logo all song long, a character for a verse), one without an end stays
   // to the end of the song, and each comes and goes by itself (no つなぎ)
   const layered = k === 'front';
-  const tl = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
-    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
-    .filter(x => x.e - x.s > 0.02);
+  const tl = timedSpans(timed, D, layered);
   const cut = (list, holes) => {                            // the parts of each [start, end) outside the holes
     const out = [];
     for (const g of list) {
@@ -5373,7 +5391,7 @@ function resolveTrack(m, k, plan) {
     return out;
   };
   let segs = cut(auto, tl).concat(own)
-    .concat(cut(tl.map(x => ({ assetId: x.c.assetId, start: x.s, end: x.e, line: -1, src: x.c, anchor: x.s })), own.map(o => ({ s: o.start, e: o.end }))))
+    .concat(cut(tl.map(x => ({ assetId: x.c.assetId, start: x.s, end: x.e, line: -1, src: x.c, anchor: x.a })), own.map(o => ({ s: o.start, e: o.end }))))
     .filter(s => s.assetId && known.has(s.assetId));
   segs.sort((a, b) => a.start - b.start);
   segs.forEach(s => { s.end = Math.min(s.end, D); });
@@ -5486,6 +5504,41 @@ M.resolve = (project, plan) => {
   const out = { lyricBg: m.lyricBg === 'over' ? 'over' : 'off', scrim: Object.assign({}, m.scrim) };
   for (const k of M.TRACKS) out[k] = resolveTrack(m, k, plan);
   return out;
+};
+
+/* おまかせ × pictures: does a background picture show during [t0, t1) of lyric line li? (the order of resolveTrack: a picture
+   chosen for the line, else one placed at a time, else the automatic one). Read from the project, before the lyrics are planned */
+M.backUnder = (project, li, t0, t1) => {
+  const m = project && project.media;
+  if (!m || !m.assets || !m.assets.length || !m.tracks || !m.tracks.back || (J.keyMode && J.keyMode(project))) return false;
+  const known = new Set(m.assets.map(a => a.id)), cuts = m.tracks.back.cuts || [];
+  let own = null; for (const c of cuts) if (c.lineRef && c.lineRef.line === li) own = c;   // the last one, as resolveTrack's byLine
+  if (own) return !!own.assetId && known.has(own.assetId);                          // 「なし」 = nothing under this line
+  // placed at a time: a picture there counts; any placed cut (also 「なし」) takes its span from the automatic pictures
+  const spans = timedSpans(cuts.filter(c => !c.lineRef), Infinity, false).filter(x => x.s < t1 && x.e > t0);
+  if (spans.some(x => x.c.assetId && known.has(x.c.assetId))) return true;
+  const A = m.autoFill && m.autoFill.back;
+  if (!A || A.mode !== 'perLine') return false;
+  const onFront = new Set(((m.tracks.front && m.tracks.front.cuts) || []).map(c => c.assetId).filter(Boolean));
+  if (!m.assets.some(a => !onFront.has(a.id))) return false;
+  // the automatic picture shows in whatever part of [t0, t1) no placed cut takes
+  let from = t0;
+  for (const x of spans.sort((a, b) => a.s - b.s)) { if (x.s > from + 0.02) return true; from = Math.max(from, x.e); }
+  return t1 - from > 0.02;
+};
+/* the style the planner picks a cut's layout with: over a background picture (and with 「画像の上では控えめに」 on), the layouts that
+   fill the screen (busy) are rarely chosen. Same number of random draws; without a picture the style itself (so nothing changes) */
+const CALM_BUSY = 0.12, calmCache = new WeakMap();
+M.calmStyle = (st, project, li, t0, t1) => {
+  if (!st || !project || !project.media || project.media.calm !== true || !M.backUnder(project, li, t0, t1)) return st;
+  let c = calmCache.get(st);
+  if (!c) {
+    const lay = Object.assign({}, st.bias && st.bias.layout);
+    for (const k of J.LAYOUT_ORDER || []) { const L = J.LAYOUTS[k]; if (L && L.busy) lay[k] = (lay[k] != null ? lay[k] : L.w ?? 1) * CALM_BUSY; }
+    c = Object.assign(Object.create(st), { bias: Object.assign({}, st.bias, { layout: lay }) });
+    calmCache.set(st, c);
+  }
+  return c;
 };
 
 /* every cut showing at time t (the front track's layers overlap; the back track shows one) */
@@ -38175,6 +38228,7 @@ function section() {
       <div class="media-checks">
         <label><input type="checkbox" id="mediaAuto"> ${L('行ごとに自動で切り替える', 'Change with every line')}</label>
         <label><input type="checkbox" id="mediaLyricBg"> ${L('背景グラフィックも重ねる', 'Also draw the background graphics')}</label>
+        <label title="${L('おまかせで、画像・動画の上では画面を埋める派手なレイアウトをあまり選ばない（画像が隠れにくい）。手で選んだレイアウトはそのまま', 'Randomize rarely picks the screen-filling layouts over a picture or clip, so it stays visible. Layouts chosen by hand stay')}"><input type="checkbox" id="mediaCalm"> ${L('画像の上では歌詞を控えめに', 'Calmer lyrics over pictures')}</label>
       </div>
       <div class="media-opts" style="margin-top:8px">
         <label class="field">${L('順番', 'Order')}<select id="mediaOrder"><option value="sequential">${L('追加した順', 'As added')}</option><option value="random">${L('ランダム', 'Random')}</option></select></label>
@@ -38306,6 +38360,7 @@ function syncControls() {
   const m = media(), A = autoB(), B = back();
   $('mediaAuto').checked = A.mode === 'perLine';
   $('mediaLyricBg').checked = m.lyricBg === 'over';
+  $('mediaCalm').checked = m.calm === true;
   $('mediaOrder').value = A.order; $('mediaHold').value = A.hold; $('mediaFit').value = A.fit;
   $('mediaTrans').value = A.trans || 'fade'; $('mediaEnter').value = A.enter || 'fade'; $('mediaTreat').value = A.treat || 'none';
   $('mediaScrim').value = (m.scrim && m.scrim.mode) || 'auto';
@@ -38337,6 +38392,7 @@ function bind(sec) {
   sec.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer && e.dataTransfer.files); });
   $('mediaAuto').addEventListener('change', e => { autoB().mode = e.target.checked ? 'perLine' : 'off'; changed(); });
   $('mediaLyricBg').addEventListener('change', e => { media().lyricBg = e.target.checked ? 'over' : 'off'; changed(); });
+  $('mediaCalm').addEventListener('change', e => { media().calm = e.target.checked; changed(); });
   $('mediaOrder').addEventListener('change', e => { autoB().order = e.target.value; changed(); });
   $('mediaHold').addEventListener('change', e => { autoB().hold = e.target.value; changed(); });
   $('mediaFit').addEventListener('change', e => { autoB().fit = e.target.value; changed(); });

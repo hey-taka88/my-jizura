@@ -79,6 +79,7 @@ async def main():
             # lyrics: three 10-second lines, no snapping; 120 BPM → a bar of 4 beats = 2 s
             await pg.evaluate("""() => { const P = J.ui.project; P.lyrics = '[00:00.00]いち\\n[00:10.00]に\\n[00:20.00]さん\\n[00:30.00]よん\\n[00:40.00]ご'; P.timing.snap = false; P.timing.bpm = 120; P.title = '';
               P.media.tracks.back.dim = 0; P.media.scrim = { mode: 'off', amount: 0 };   // the clip colours are read back: no veil, no plate
+              P.media.calm = false;   // the lyric layouts this test was written against (a large white layout would cover the colours it reads)
               document.getElementById('lyrics').value = P.lyrics; J.uiApi.replan(); }""")
             print('add clips')
             await pg.set_input_files('#mediaFiles', paths)
