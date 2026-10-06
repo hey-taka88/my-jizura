@@ -118,7 +118,7 @@ JS_PLAN = r"""() => {
     }),
     media: m.assets.map((a, i) => ({ n: i + 1, name: a.name, id: a.id, type: a.type, w: a.w, h: a.h, duration: a.duration, loaded: J.mediaAssets.has(a.id) })),
     mediaOptions: { auto: m.autoFill.back.mode === 'perLine', order: m.autoFill.back.order, hold: m.autoFill.back.hold, fit: m.autoFill.back.fit,
-      dim: m.tracks.back.dim, lyricBg: m.lyricBg, shuffle: m.autoFill.back.seed, video: m.autoFill.back.video,
+      dim: m.tracks.back.dim, lyricBg: m.lyricBg, calm: m.calm === true, shuffle: m.autoFill.back.seed, video: m.autoFill.back.video,
       trans: m.autoFill.back.trans, enter: m.autoFill.back.enter, exit: m.autoFill.back.exit, treat: m.autoFill.back.treat, scrim: m.scrim.mode, scrimAmount: m.scrim.amount },
     cuts: mp ? mp.back.cuts.map(c => ({ media: name(c.assetId), start: r2(c.start), end: r2(c.end), timed: !!c.timed })) : [],
     // pictures placed at a time of the song (add_timed_media): over the automatic ones, under the ones chosen for a line
@@ -356,6 +356,7 @@ JS_SET_MEDIA = r"""(o) => {
   if (o.shuffle != null) A.seed = o.shuffle;
   if (o.dim != null) T.dim = o.dim;
   if (o.lyricBg != null) m.lyricBg = o.lyricBg ? 'over' : 'off';
+  if (o.calm != null) m.calm = !!o.calm;
   A.video = Object.assign({ extend: 'loop', rate: 1, beats: 4 }, A.video, o.video || {});
   S.project.media = J.media.normalize(m);                 // the same checks as a project file
   J.uiApi.replan(); J.uiApi.flushSave();
@@ -828,12 +829,12 @@ class Jizura:
         return await self._ev(JS_SET_LOOK, arg)
 
     async def set_media_options(self, auto=None, order=None, hold=None, fit=None, dim=None, lyric_bg=None, shuffle=None, extend=None, rate=None, beats=None,
-                                trans=None, enter=None, exit=None, treat=None, scrim=None, scrim_amount=None):
+                                trans=None, enter=None, exit=None, treat=None, scrim=None, scrim_amount=None, calm=None):
         """how the pictures fill the song: auto (one per line in turn), order, hold (kenburns = slow zoom, pan, push, drift, beatPulse, still),
         fit, dim (0–0.9, a dark veil so the lyrics stay readable), lyric_bg (also draw the lyrics' own background graphic), shuffle (a number:
         another random order), trans (between two pictures: fade / cut / mix / a transition key), enter / exit (fade / slide / zoom / wipe / cut,
         where no picture touches), treat (none / match / mono / sepia / duotone / blur), scrim (a plate behind the lyrics: auto / always / off)
-        and scrim_amount (0–0.9); for clips: extend (when a clip is shorter than its line), rate, beats (extend='beat': restart every N beats)"""
+        and scrim_amount (0–0.9); calm (おまかせ picks the screen-filling layouts rarely over a picture); for clips: extend (when a clip is shorter than its line), rate, beats (extend='beat': restart every N beats)"""
         chk = lambda v, ok, k: None if v is None or v in ok else (_ for _ in ()).throw(JizuraError(f'{k} は {ok} のどれか: {v}'))
         chk(order, MEDIA_ORDER, 'order'); chk(hold, MEDIA_HOLD, 'hold'); chk(fit, MEDIA_FIT, 'fit')
         chk(trans, (await self.options())['mediaJoin'], 'trans'); chk(enter, MEDIA_ENTER, 'enter'); chk(exit, MEDIA_ENTER, 'exit')
@@ -845,7 +846,7 @@ class Jizura:
         await self._ev(JS_SET_MEDIA, {'auto': auto, 'order': order, 'hold': hold, 'fit': fit, 'dim': None if dim is None else float(dim),
                                       'lyricBg': lyric_bg, 'shuffle': None if shuffle is None else int(shuffle), 'video': video,
                                       'trans': trans, 'enter': enter, 'exit': exit, 'treat': treat, 'scrim': scrim,
-                                      'scrimAmount': None if scrim_amount is None else float(scrim_amount)})
+                                      'scrimAmount': None if scrim_amount is None else float(scrim_amount), 'calm': calm})
         return (await self.get_plan())['mediaOptions']
 
     async def media_omakase(self):

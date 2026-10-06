@@ -392,7 +392,7 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 1. [x] 素材同梱ファイル `.jizura.zip`（保存・開く・「素材が足りない」の警告）：「素材込みで保存」と「開く」（`.zip` も可）。`src/11z_media_bundle.js`。画像・動画は元のバイト列、読み込んだフォント、曲も入れる。開くときは中身のハッシュが id と合う素材だけを受け入れ、ブラウザの保存場所に入れてから普通に開く（本家の `12_ui.js` は `f.text()` の代わりに `J.mediaBundle.unpack(f)` を呼ぶ 1 行、`11_export.js` は `J.ZipWriter` を出す 1 行）。他のツールで deflate 圧縮し直した zip も開ける（`DecompressionStream`）。MCP `save_bundle`、CLI `--save-bundle`。`dev/bundle_e2e.py`
 2. かんたんモード／スマホモードの導線（最小）
 3. 英語版：`app/english.py` に新しい UI 文字列を追加（`tools/check_i18n.py` が英語以外の版で警告する場合は、新規文字列を日本語のままにしておく方針でも可 — 自分用なので）
-4. おまかせとの連携（§2.8 の重み付け）
+4. [x] おまかせとの連携（§2.8 の重み付け）：「画像の上では歌詞を控えめに」（`project.media.calm`）。背景に画像・動画がある区間では、画面を埋めるレイアウト（`busy`）の重みを 0.12 倍にする（`M.calmStyle`、`08_planner.js` はレイアウト抽選に渡すスタイルを変える 1 行）。乱数を引く回数は変わらない。背景グラフィック（`J.BG`）は前から画像の下で描かない（「背景グラフィックも重ねる」を除く）ので変えない。新しいプロジェクトは on、この設定より前に保存したプロジェクトは off（見た目が変わらない）。手で選んだレイアウト・固定した行・「なし」の行・グリーン／ブラックバックは対象外。MCP `set_media_options(calm=…)`、CLI `--calm on|off`。`dev/calm_e2e.py`
 5. AE 用 JSON に `media` を含め、AE パネル側でフッテージを配置（`ae/50_build.jsx`）。CEP 版で素材のパスを渡す。**任意**（AE を使わないなら飛ばす）
 6. README（フォーク節）と CHANGELOG
 - 受け入れ：別 PC のブラウザで `.jizura.zip` を開いて同じ MP4 が書き出せる

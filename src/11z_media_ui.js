@@ -51,6 +51,7 @@ function section() {
       <div class="media-checks">
         <label><input type="checkbox" id="mediaAuto"> ${L('行ごとに自動で切り替える', 'Change with every line')}</label>
         <label><input type="checkbox" id="mediaLyricBg"> ${L('背景グラフィックも重ねる', 'Also draw the background graphics')}</label>
+        <label title="${L('おまかせで、画像・動画の上では画面を埋める派手なレイアウトをあまり選ばない（画像が隠れにくい）。手で選んだレイアウトはそのまま', 'Randomize rarely picks the screen-filling layouts over a picture or clip, so it stays visible. Layouts chosen by hand stay')}"><input type="checkbox" id="mediaCalm"> ${L('画像の上では歌詞を控えめに', 'Calmer lyrics over pictures')}</label>
       </div>
       <div class="media-opts" style="margin-top:8px">
         <label class="field">${L('順番', 'Order')}<select id="mediaOrder"><option value="sequential">${L('追加した順', 'As added')}</option><option value="random">${L('ランダム', 'Random')}</option></select></label>
@@ -182,6 +183,7 @@ function syncControls() {
   const m = media(), A = autoB(), B = back();
   $('mediaAuto').checked = A.mode === 'perLine';
   $('mediaLyricBg').checked = m.lyricBg === 'over';
+  $('mediaCalm').checked = m.calm === true;
   $('mediaOrder').value = A.order; $('mediaHold').value = A.hold; $('mediaFit').value = A.fit;
   $('mediaTrans').value = A.trans || 'fade'; $('mediaEnter').value = A.enter || 'fade'; $('mediaTreat').value = A.treat || 'none';
   $('mediaScrim').value = (m.scrim && m.scrim.mode) || 'auto';
@@ -213,6 +215,7 @@ function bind(sec) {
   sec.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer && e.dataTransfer.files); });
   $('mediaAuto').addEventListener('change', e => { autoB().mode = e.target.checked ? 'perLine' : 'off'; changed(); });
   $('mediaLyricBg').addEventListener('change', e => { media().lyricBg = e.target.checked ? 'over' : 'off'; changed(); });
+  $('mediaCalm').addEventListener('change', e => { media().calm = e.target.checked; changed(); });
   $('mediaOrder').addEventListener('change', e => { autoB().order = e.target.value; changed(); });
   $('mediaHold').addEventListener('change', e => { autoB().hold = e.target.value; changed(); });
   $('mediaFit').addEventListener('change', e => { autoB().fit = e.target.value; changed(); });

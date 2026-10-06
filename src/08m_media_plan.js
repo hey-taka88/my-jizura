@@ -188,6 +188,35 @@ M.resolve = (project, plan) => {
   return out;
 };
 
+/* おまかせ × pictures: does a background picture show during [t0, t1) of lyric line li? (the order of resolveTrack: a picture
+   chosen for the line, else one placed at a time, else the automatic one). Read from the project, before the lyrics are planned */
+M.backUnder = (project, li, t0, t1) => {
+  const m = project && project.media;
+  if (!m || !m.assets || !m.assets.length || !m.tracks || !m.tracks.back || (J.keyMode && J.keyMode(project))) return false;
+  const known = new Set(m.assets.map(a => a.id)), cuts = m.tracks.back.cuts || [];
+  const own = cuts.find(c => c.lineRef && c.lineRef.line === li);
+  if (own) return !!own.assetId && known.has(own.assetId);                          // 「なし」 = nothing under this line
+  if (cuts.some(c => !c.lineRef && c.assetId && known.has(c.assetId) && c.start < t1 && (c.end == null || c.end > t0))) return true;
+  const A = m.autoFill && m.autoFill.back;
+  if (!A || A.mode !== 'perLine') return false;
+  const onFront = new Set(((m.tracks.front && m.tracks.front.cuts) || []).map(c => c.assetId).filter(Boolean));
+  return m.assets.some(a => !onFront.has(a.id));
+};
+/* the style the planner picks a cut's layout with: over a background picture (and with 「画像の上では控えめに」 on), the layouts that
+   fill the screen (busy) are rarely chosen. Same number of random draws; without a picture the style itself (so nothing changes) */
+const CALM_BUSY = 0.12, calmCache = new WeakMap();
+M.calmStyle = (st, project, li, t0, t1) => {
+  if (!st || !project || !project.media || project.media.calm !== true || !M.backUnder(project, li, t0, t1)) return st;
+  let c = calmCache.get(st);
+  if (!c) {
+    const lay = Object.assign({}, st.bias && st.bias.layout);
+    for (const k of J.LAYOUT_ORDER || []) { const L = J.LAYOUTS[k]; if (L && L.busy) lay[k] = (lay[k] != null ? lay[k] : L.w ?? 1) * CALM_BUSY; }
+    c = Object.assign(Object.create(st), { bias: Object.assign({}, st.bias, { layout: lay }) });
+    calmCache.set(st, c);
+  }
+  return c;
+};
+
 /* every cut showing at time t (the front track's layers overlap; the back track shows one) */
 M.cutsAt = (plan, t, track) => {
   if (track !== 'front') { const c = M.cutAt(plan, t, track); return c ? [c] : []; }
