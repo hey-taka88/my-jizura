@@ -155,28 +155,49 @@ async def main():
             await jz.new_project(lyrics=LYRICS);await jz.add_media([str(p) for p in copies]);await jz.set_media_options(auto=False)
             for pos,start in ((-.25,0),(.25,1)):
                 await jz.add_timed_media('clock.mp4',0,track='front',x=pos,size=.4,clip_start=start,enter='cut',exit='cut')
-            await ev("() => {J.mediaPlace.select(J.ui.project.media.tracks.front.cuts[0].id);J.uiApi.seek(2);}")
-            await pg.wait_for_timeout(100)
-            # Start with the ordinary preview; no prepareFrame/export captures exist yet.
-            await pg.wait_for_function("() => {const a=[...J.mediaAssets.values()].find(a=>a.type==='video');return a&&!a.el.seeking&&Math.abs(a.el.currentTime-2)<.05;}")
-            ok(await ev("() => [...J.mediaAssets.values()].every(a=>!a.caps||a.caps.length===0)"),'ordinary preview has no export captures')
             await ev("""() => {
               window.createdVideos=0;window.origCreateElement=document.createElement;
               document.createElement=function(tag,...args){if(tag==='video')window.createdVideos++;return window.origCreateElement.call(this,tag,...args);};
             }""")
+            await ev("() => {J.mediaPlace.select(J.ui.project.media.tracks.front.cuts[0].id);J.uiApi.seek(2);}")
+            await pg.wait_for_timeout(100)
+            # Start with the ordinary preview; no prepareFrame/export captures exist yet.
+            await ev("""() => {
+              const cv=document.createElement('canvas');cv.width=960;cv.height=540;
+              window.previewRGB=()=>{const P=J.ui.plan,x=cv.getContext('2d');x.setTransform(1,0,0,1,0,0);x.clearRect(0,0,960,540);
+                x.scale(960/P.W,960/P.W);J.media.drawTrack(x,P,J.ui.t,'front',{scale:960/P.W});
+                return [240,720].map(xx=>Array.from(x.getImageData(xx,270,1,1).data).slice(0,3));};
+            }""")
+            async def preview_ready(reds):
+                try:
+                    await pg.wait_for_function('(reds) => previewRGB().every((rgb,i)=>Math.abs(rgb[0]-reds[i])<4)',arg=reds,timeout=2000)
+                except Exception: pass  # report the actual rendered pixels as a failed assertion below
+                return await ev('() => previewRGB()')
+            preview=await preview_ready([130,180])
+            ok(await ev("() => [...J.mediaAssets.values()].every(a=>!a.caps||a.caps.length===0)"),'ordinary preview has no export captures')
+            ok(abs(preview[0][0]-130)<4 and abs(preview[1][0]-180)<4,
+               f'ordinary preview preserves both shared-video clip times {preview}')
+            await ev('() => J.uiApi.seek(.2)')
+            await preview_ready([30,80])
+            await pg.locator('#btnPlay').click()
+            await pg.wait_for_function('() => J.ui.t>1.3')
+            playing=await ev('() => {const rgb=previewRGB(),t=J.ui.t;J.uiApi.pause();return {rgb,t};}')
+            ok(abs(playing['rgb'][0][0]-80)<4 and abs(playing['rgb'][1][0]-130)<4,
+               f'playing preview keeps separate shared-video frames {playing}')
+            await ev('() => J.uiApi.seek(2)');await preview_ready([130,180])
             ok(await ev('() => J.media.liveVideos()')==3,'fixture fills the three-video decoder budget')
             await pg.locator('#mediaFront .key').nth(1).select_option('spoid')
             b=await box_bounds();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
             await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[1].chroma?.color")
             live_key=(await ev(FRONT))[1]['chroma']['color']
             budget=await ev('() => {document.createElement=window.origCreateElement;return {live:J.media.liveVideos(),extra:window.createdVideos};}')
-            ok(budget['live']<=3 and budget['extra']==0,f'sampling uses only the existing tracked decoders {budget}')
+            ok(budget['live']<=3 and budget['extra']==0,f'preview and sampling use only the existing tracked decoders {budget}')
             ok(await ev('() => !J.ui.playing && Math.abs(J.ui.t-2)<.05'),'video sampling holds the playhead at the clicked time')
-            resumed=await ev("""() => {
-              J.uiApi.seek(.5);J.media.syncPreview(J.ui.plan,.5,false);
-              const a=J.mediaAssets.get(J.ui.project.media.tracks.front.cuts[0].assetId);return a.el.currentTime;
-            }""")
-            ok(abs(resumed-.5)<.01,f'scrubbing immediately after sampling is not blocked by export ownership ({resumed})')
+            await ev("() => {delete J.ui.project.media.tracks.front.cuts[1].chroma;J.uiApi.replan();J.uiApi.seek(.5);window.scrubStart=performance.now();}")
+            resumed=await preview_ready([30,80])
+            elapsed=await ev('() => performance.now()-window.scrubStart')
+            ok(elapsed<1000 and abs(resumed[0][0]-30)<4 and abs(resumed[1][0]-80)<4,
+               f'scrubbing after sampling updates both frames without an export hold ({resumed}, {elapsed:.0f}ms)')
             await ev('() => J.uiApi.seek(2)')
             await ev("() => {delete J.ui.project.media.tracks.front.cuts[1].chroma;J.uiApi.replan();}")
             r=await ev("""async () => {

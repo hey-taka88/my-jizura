@@ -2,7 +2,8 @@
    my-jizura (fork) — media layer: video clips (Phase 2)
    · a clip is kept as its file (Blob → object URL) and shown through one muted <video> element
    · preview  : M.syncPreview() lets the element play and nudges playbackRate to follow the song (a seek only on a
-                jump: a loop seam, a bar restart, ping-pong backwards, scrubbing) — every seek stalls the decoder
+                jump: a loop seam, a bar restart, ping-pong backwards, scrubbing). Shared uses at different times
+                are copied with the same decoder, keeping the last complete pictures while preparing the next ones.
    · export   : M.prepareFrame() seeks every needed clip to its exact time for each output frame (awaited by the
                 MP4 / PNG loops); when one clip is needed at two times (a loop seam), the other time is copied first
    · at most MAX_LIVE elements hold a decoder; the least recently used ones are unloaded (src removed)
@@ -51,7 +52,7 @@ M.releaseVideo = a => {
   if (!a || a.type !== 'video') return;
   try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {}
   if (a.url) URL.revokeObjectURL(a.url);
-  a.live = false; a.caps = [];
+  a.live = false; a.caps = []; a.preview = null;
 };
 
 /* decoder budget */
@@ -88,14 +89,24 @@ function needed(plan, t) {
 /* preview: follow the song with as few seeks as possible */
 let sampling = 0;
 let exportUntil = 0;                          // an export owns the clips while it runs (the preview must not seek them)
+let previewBusy = false;
 M.syncPreview = (plan, t, playing, redraw) => {
-  if (!plan || !plan.media || sampling || performance.now() < exportUntil) return;
+  if (!plan || !plan.media || sampling || previewBusy || performance.now() < exportUntil) return;
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && (a.at != null || (a.caps && a.caps.length))) { a.at = null; a.caps = []; }   // export copies are stale now
   const { out, next } = needed(plan, t);
+  const shared = [];
+  for (const a of J.mediaAssets.values()) if (a.type === 'video') a.previewNeeded = false;
   for (const [id, uses] of out) {
     const a = J.mediaAssets.get(id);
     if (!a || a.type !== 'video') continue;
     live(a);
+    // One element cannot show different clip times at once. Keep a picture for each use, with no extra decoder.
+    if (uses.length > 1 && new Set(uses.flatMap(({ vt }) => vt.alt == null ? [capKey(vt.main)] : [capKey(vt.main), capKey(vt.alt)])).size > 1) {
+      a.previewNeeded = true;
+      const key = uses.map(({ c, vt }) => [c.id, capKey(vt.main), vt.alt == null ? null : capKey(vt.alt)].join(':')).join('|');
+      if (!a.preview || a.preview.plan !== plan || a.preview.key !== key) shared.push({ a, uses, key });
+      continue;
+    }
     const { c, vt } = uses[0], el = a.el;
     const target = vt.alt != null && vt.k > 0.5 ? vt.alt : vt.main;
     // can the element simply play forward from here? (not at a seam, not backwards, not held on the last frame)
@@ -119,6 +130,7 @@ M.syncPreview = (plan, t, playing, redraw) => {
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && !out.has(a.id) && a.el && !a.el.paused) a.el.pause();
   for (const id of next) { const a = J.mediaAssets.get(id); if (a && a.type === 'video' && !a.live && M.liveVideos() < MAX_LIVE) live(a); }
   trim(new Set([...out.keys(), ...next]));
+  if (shared.length) queuePreview(plan, shared, redraw);
 };
 M.pauseVideos = () => { for (const a of J.mediaAssets.values()) if (a.type === 'video' && a.el && !a.el.paused) a.el.pause(); };
 
@@ -156,6 +168,34 @@ async function seekExact(el, time, signal) {
 const capKey = time => Math.round(time * 1000);
 // A shared decoder cannot seek for two frame preparations at once (export, or a user sample).
 let frameQueue = Promise.resolve();
+// Double-buffer the copied pictures: a seek must not change a frame the renderer is still using.
+function queuePreview(plan, shared, redraw) {
+  previewBusy = true;
+  const prepared = frameQueue.then(async () => {
+    if (sampling || performance.now() < exportUntil) return;
+    for (const { a, uses, key } of shared) {
+      if (J.mediaAssets.get(a.id) !== a) continue;
+      const bank = a.preview && a.preview.bank === 0 ? 1 : 0;
+      const banks = a.previewPools || (a.previewPools = [[], []]), pool = banks[bank], copies = new Map();
+      try {
+        for (const { vt } of uses) for (const time of [vt.main, vt.alt]) {
+          if (time == null || copies.has(capKey(time))) continue;
+          await seekExact(a.el, time);
+          const i = copies.size, cv = pool[i] || (pool[i] = document.createElement('canvas'));
+          const k = Math.min(1, 1920 / Math.max(a.sw, a.sh)), w = Math.round(a.sw * k), h = Math.round(a.sh * k);
+          if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+          cv.getContext('2d').drawImage(a.el, 0, 0, w, h);
+          copies.set(capKey(time), cv);
+        }
+        if (J.mediaAssets.get(a.id) !== a) continue;
+        const frames = new Map(uses.map(({ c, vt }) => [c, { main: copies.get(capKey(vt.main)), alt: vt.alt == null ? null : copies.get(capKey(vt.alt)) }]));
+        a.preview = { plan, key, bank, frames };
+      } catch (e) { console.warn('media: shared preview seek failed', a.name, e); }
+    }
+  });
+  frameQueue = prepared.catch(() => {});
+  prepared.finally(() => { previewBusy = false; if (redraw) redraw(); });
+}
 M.prepareFrame = (plan, t, signal, sampleCut) => {
   const prepared = frameQueue.then(() => prepareFrame(plan, t, signal, sampleCut));
   frameQueue = prepared.catch(() => {});
@@ -216,7 +256,12 @@ M.videoCap = (a, time) => {
   return a.at === k && a.live && a.el.readyState >= 2 ? a.el : null;      // the time the element itself was left on
 };
 /* what to draw for a clip at clip time `time`: an exact copy, the element, or null (nothing decoded yet) */
-M.videoFrame = (a, time) => {
+M.videoFrame = (a, time, cut, alt = false) => {
+  if (a.previewNeeded && !sampling && performance.now() >= exportUntil) {
+    const frame = a.preview && a.preview.frames.get(cut);
+    return frame ? (alt ? frame.alt : frame.main) : null;
+  }
+  if (alt) return M.videoCap(a, time);
   const k = capKey(time);
   for (const c of a.caps || []) if (c.key === k) return c.cv;
   if (!a.live || a.el.readyState < 2) return null;

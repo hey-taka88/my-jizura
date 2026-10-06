@@ -81,7 +81,7 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   let vt = null, frame = null;
   if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
     vt = M.videoTimes(plan, c, t);
-    frame = vt && M.videoFrame(asset, vt.main);
+    frame = vt && M.videoFrame(asset, vt.main, c);
     if (!frame) return false;
   } else if (!asset.source) return false;
   const sw = asset.w, sh = asset.h;
@@ -110,9 +110,9 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   }
   ctx.globalAlpha = a;
   ctx.drawImage(src, x0, y0, dw, dh);
-  // loop seam (exports): the start of the clip fades in over its end
+  // loop seam: the start of the clip fades in over its end when both frames are available
   if (vt && vt.alt != null && vt.k > 0) {
-    let s2 = M.videoCap(asset, vt.alt);
+    let s2 = M.videoFrame(asset, vt.alt, c, true);
     if (s2 && c.chroma && M.keyed) s2 = M.keyed(asset, s2, c, 1);
     if (s2 && c.treat && c.treat !== 'none' && M.treated) s2 = M.treated(asset, s2, c, plan, 1);
     if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, x0, y0, dw, dh); }
