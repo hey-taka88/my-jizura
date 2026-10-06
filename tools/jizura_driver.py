@@ -384,6 +384,11 @@ JS_PREVIEW = r"""async ([times, width]) => {
   return out;
 }"""
 
+JS_SAVE_BUNDLE = r"""async (v) => {
+  const r = await J.mediaBundle.pack(J.ui.project, v);
+  await J.saveFile('project.jizura.zip', r.blob);
+  return { assets: r.assets, fonts: r.fonts, song: r.song, missing: r.missing, pcFonts: r.pcFonts, size: r.blob.size };
+}"""
 JS_EXPORT = r"""async (o) => {
   const S = J.ui;
   try { await document.fonts.ready; } catch (e) {}
@@ -531,10 +536,13 @@ class Jizura:
         return await self.get_plan()
 
     async def open_project(self, path):
-        """a saved .jizura.json (checked like the 「開く」 button). Its pictures must be added again with add_media()
-        (they are matched by content, so the per-line choices come back)"""
+        """a saved .jizura.json (checked like the 「開く」 button): its pictures must be added again with add_media() (they are
+        matched by content, so the per-line choices come back). A .jizura.zip (save_bundle) brings its pictures, clips, fonts
+        and song with it"""
         if not os.path.isfile(path): raise JizuraError(f'ファイルが見つかりません: {path}')
         await self._open_json(os.path.abspath(path))
+        try: await self.page.wait_for_function('!J.mediaBundle || !J.mediaBundle.busy()', timeout=120000)
+        except Exception: raise JizuraError('素材込みファイルの読み込みが終わりませんでした')
         await asyncio.sleep(0.3)
         return await self.get_plan()
 
@@ -543,6 +551,19 @@ class Jizura:
         txt = await self._ev('(v) => JSON.stringify(Object.assign({}, J.ui.project, { appVersion: v }), null, 1)', _version())
         with open(path, 'w', encoding='utf-8') as f: f.write(txt)
         return path
+
+    async def save_bundle(self, path):
+        """the project with its pictures, clips, imported fonts and song in one .jizura.zip (the same as 「素材込みで保存」).
+        Returns what went in and what could not (missing: not in this browser; pcFonts: fonts of the PC, by name only)"""
+        try:
+            async with self.page.expect_download(timeout=0) as dl:
+                r = await self._ev(JS_SAVE_BUNDLE, _version())
+            await (await dl.value).save_as(path)
+        except Exception as e:
+            m = re.sub(r'^.*?Error: ', '', str(e).split('\n')[0])
+            raise JizuraError(f'素材込みで保存できませんでした: {m}')
+        r['path'] = path
+        return r
 
     # ------------------------------------------------------------ inputs
     async def set_lyrics(self, text=None, path=None):

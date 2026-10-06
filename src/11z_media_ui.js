@@ -247,6 +247,7 @@ J.mediaUI = {
     anchor.parentNode.insertBefore(sec, anchor);
     bind(sec);
     if (J.mediaPlace) J.mediaPlace.init(a, sec);                     // 前景の配置編集 (11z_media_place.js)
+    if (J.mediaBundle) J.mediaBundle.init(a);                        // 素材込みで保存 / .zip を開く (11z_media_bundle.js)
     // the sound of a video file can be the song (decodeAudioData reads the audio track of MP4 / WebM)
     const au = $('audioFile'); if (au && !/video/.test(au.accept)) au.accept += ',video/mp4,video/webm,.mp4,.m4v,.webm,.mov';
     lastProject = S.project; syncControls(); restore();

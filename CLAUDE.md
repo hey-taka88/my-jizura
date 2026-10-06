@@ -44,6 +44,7 @@ python3 dev/front_e2e.py --require-export         # 前景（位置・重なり�
 python3 dev/chroma_e2e.py                         # クロマキーの WebGL / 実際の CPU 処理、設定変更後の加工キャッシュを確認
 python3 dev/place_e2e.py                          # 前景の配置編集（「前」・枠のドラッグで移動／大きさ／回転・一覧の時間と不透明度・スポイト・再読み込み）をマウス操作で確認
 python3 dev/place_regression_e2e.py               # 描画と採色の一致（動き・回転・動画の別時刻）、採色解除、キャンセル時の保存復元
+python3 dev/bundle_e2e.py                         # 素材込みの .jizura.zip：保存 → 空のブラウザ（別の PC 相当）で開いて同じ画素・MP4、足りない素材の警告
 python3 dev/mcp_e2e.py [--browser chromium]       # MCP サーバー（tools/jizura_mcp.py）を本物の MCP クライアントから通しで確認（mcp 1.x / 2.x）
 python3 tools/jizura_cli.py info                  # CLI：選べる値とブラウザの対応状況。render / preview / plan は docs/MCP.md
 node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触ったときだけ

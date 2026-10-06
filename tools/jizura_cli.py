@@ -169,6 +169,9 @@ async def run(a):
             else:
                 out = target(per_aspect(a.out, asp or 'x', many), a.force)
                 if a.save_project: await jz.save_project(target(per_aspect(a.save_project, asp or 'x', many), a.force))
+                if a.save_bundle:
+                    b = await jz.save_bundle(target(per_aspect(a.save_bundle, asp or 'x', many), a.force))
+                    if b['missing']: log('素材込みファイルに入っていないもの（このブラウザに無い）: ' + '、'.join(b['missing']))
                 t0, t1 = None, None
                 if a.range:
                     s, _, e = a.range.partition('-'); t0 = float(s) if s else None; t1 = float(e) if e else None
@@ -187,6 +190,7 @@ def main():
     r.add_argument('--range', help='秒の範囲だけ書き出す（例 30-45）')
     r.add_argument('--quality', choices=QUALITY); r.add_argument('--no-audio', action='store_true')
     r.add_argument('--save-project', help='プロジェクトも保存する（.jizura.json）')
+    r.add_argument('--save-bundle', help='プロジェクトを画像・動画・フォント・曲ごと保存する（.jizura.zip。別の PC でも「開く」で戻せる）')
     p = sub.add_parser('preview', help='フレームを PNG で保存'); common(p)
     p.add_argument('--out-dir', required=True); p.add_argument('--at', help='秒（カンマ区切り。例 12.5,40）')
     p.add_argument('--count', type=int, default=6, help='--at が無いとき、歌詞の行から均等に何枚'); p.add_argument('--width', type=int, default=960)

@@ -1794,7 +1794,7 @@ function bind() {
   $('fileProject').addEventListener('change', async e => {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     try {
-      const np = mergeProject(JSON.parse(await f.text()));
+      const np = mergeProject(JSON.parse(J.mediaBundle && J.mediaBundle.isBundle(f) ? await J.mediaBundle.unpack(f) : await f.text()));   // my-jizura: .jizura.zip
       if (S.tap) stopTap();
       pause();
       S.project = np;

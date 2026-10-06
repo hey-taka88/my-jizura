@@ -368,7 +368,7 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 - [x] **P0 曲の時刻で置く背景**：`add_timed_media` / `remove_timed_media`（CLI は `--timed-media 名前@開始-終了`）。優先順は「行ごとに選んだ画像 ＞ 時刻で置いた画像 ＞ 行ごとの自動」。時刻で置いた動画は `anchor`（置いた時刻）から曲の時計で流れ、行や割り込みで頭に戻らない（`M.videoTimes` が `c.anchor` を使う）。時刻で置いたカットが無いプロジェクトの計算は変わらない
 - [x] P2 書き出しの長さ：`duration`（予定）・`frames` / `videoDuration`（書いた整数フレーム）・`audioDuration` を別々に返す
 - [x] P1 文字組みを直接固定する操作：`get_line` / `set_line_style`（CLI `--line-style`）。配置・動き・カメラ・背景グラフィック・装飾・カット数・句の開始時刻・固定は本家の `overrides`（行）と `cutTech`（カット）に書く。位置・大きさ・文字色は本家に無いので `project.media.text.lines` に持ち、計画のあとで当てる（`src/08m_media_text.js`：文字だけを動かす特別なカメラ `place`（おまかせでは選ばれない）と、その行用の配色の複製）。プレビューは 1 つの描画器を使い回すので、同じ作業の中では保存→開き直し後も同じ画素になる（本家の紙・粒子の質感は描画器ごとにランダムに作られるため）。**Web の画面からは、位置・大きさ・色はまだ変えられない**（Phase 3b の配置編集で）
-- [x] P1 素材の再リンク：`relink_media`（CLI `--relink`）。素材の id は中身の SHA-256 の先頭 12 桁なので、名前が変わっても見つかる。素材込みの書き出し（`.jizura.zip`）は Phase 4
+- [x] P1 素材の再リンク：`relink_media`（CLI `--relink`）。素材の id は中身の SHA-256 の先頭 12 桁なので、名前が変わっても見つかる。素材込みの書き出し（`.jizura.zip`）は Phase 4 で `save_bundle` として追加
 - [x] P1 間奏でタイトルを出すかどうか：`set_text_options(interlude_title=false)`（CLI `--no-interlude-title`）。`project.media.text.interludeTitle`。本家のファイルは変えず、計画のあとで間奏のカットの曲名だけを消す。Web の画面にはまだ無い
 - [x] P2 制作の記録（run manifest）：MCP サーバーが作業フォルダの `jizura_runs/<日時>_<名前>/` に `report.md`（日本語）・`run.json`・`calls.jsonl`・`previews/`・`projects/` を残す（`tools/jizura_runlog.py`）。環境（版・commit・ページの sha256・ブラウザ）、時間（ツールの中／ツールとツールのあいだ、段階ごと）、読んだ・書いたファイルの sha256、プレビュー・書き出しに使ったプロジェクトの状態、`log_note` のメモ（近いプレビュー画像つき）、断った呼び出し。CLI にはまだ無い
 
@@ -389,7 +389,7 @@ if (J.media && !key && (!layer || layer === 'front')) J.media.drawTrack(ctx, pla
 
 ### Phase 4 — 統合・仕上げ
 
-1. 素材同梱ファイル `.jizura.zip`（保存・開く・「素材が足りない」の警告）
+1. [x] 素材同梱ファイル `.jizura.zip`（保存・開く・「素材が足りない」の警告）：「素材込みで保存」と「開く」（`.zip` も可）。`src/11z_media_bundle.js`。画像・動画は元のバイト列、読み込んだフォント、曲も入れる。開くときは中身のハッシュが id と合う素材だけを受け入れ、ブラウザの保存場所に入れてから普通に開く（本家の `12_ui.js` は `f.text()` の代わりに `J.mediaBundle.unpack(f)` を呼ぶ 1 行、`11_export.js` は `J.ZipWriter` を出す 1 行）。他のツールで deflate 圧縮し直した zip も開ける（`DecompressionStream`）。MCP `save_bundle`、CLI `--save-bundle`。`dev/bundle_e2e.py`
 2. かんたんモード／スマホモードの導線（最小）
 3. 英語版：`app/english.py` に新しい UI 文字列を追加（`tools/check_i18n.py` が英語以外の版で警告する場合は、新規文字列を日本語のままにしておく方針でも可 — 自分用なので）
 4. おまかせとの連携（§2.8 の重み付け）

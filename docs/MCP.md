@@ -71,7 +71,8 @@ tool_timeout_sec = 1800
 | `list_files` | 作業フォルダの歌詞・曲・画像・動画・プロジェクトの一覧 |
 | `status` | 使っているブラウザと、H.264 を読み書きできるか |
 | `options` | テーマ・スタイル・雰囲気・画面比など、選べる値の一覧 |
-| `new_project` / `open_project` / `save_project` | プロジェクトを新しく作る・開く（`.jizura.json`）・保存する。保存は `{requested, saved, collision}` を返すので、次に開くときは **`saved`** を使う。`replace=true` で、このサーバーが今回書いたファイルなら同じ名前に上書き。開いたときに読み込まれていない画像・動画は `missing` に出る |
+| `new_project` / `open_project` / `save_project` | プロジェクトを新しく作る・開く（`.jizura.json` / `.jizura.zip`）・保存する。保存は `{requested, saved, collision}` を返すので、次に開くときは **`saved`** を使う。`replace=true` で、このサーバーが今回書いたファイルなら同じ名前に上書き。開いたときに読み込まれていない画像・動画は `missing` に出る |
+| `save_bundle` | プロジェクトを画像・動画・読み込んだフォント・曲ごと **1 つの `.jizura.zip`** に保存する（画面の「素材込みで保存」と同じ）。`open_project` で開く（別の PC のブラウザなら「開く」）と、`add_media` なしで全部戻る。名前の決め方は `save_project` と同じ。入らなかったもの（このブラウザに無い素材）は `missing`、PC にインストールしたフォント（名前だけ）は `pcFonts` に出る |
 | `add_timed_media` / `remove_timed_media` | 曲の時刻で画像・動画を置く（例：曲全体に 1 本の背景動画）。行ごとの自動の画像より優先、行ごとに選んだ画像よりは下。動画は曲の時計で流れ続け、行の切り替えで頭に戻らない。`track='front'` で**歌詞の上（前景）**に置く（ロゴ・立ち絵・透過 PNG・枠）：前景は重ねてよく（あとから始まるものが上）、終わりを指定しなければ曲の最後まで、それぞれがフェードで出入りする。`x` / `y`（画面の中心からのずれ。±0.5 で端）・`size`（画面の幅に対する幅）・`rot`（度）のどれかを渡すと、画面いっぱいではなくその位置・大きさで置く（背景でも可）。`opacity`、`enter` / `exit` / `hold` も。`key='auto'`（または `'#rrggbb'`）で**クロマキー**：グリーンバックの歌っている人の動画などから、その色を抜いて重ねる（`auto` は素材のふちの色。`key_tol` 色の近さ 0〜0.6（既定 0.1。背景が残るなら上げ、人物に穴があくなら下げる）、`key_soft` ふちのなだらかさ、`key_spill` 人物に残る緑のふちを消す量）。`get_plan` の `timed` に `auto` が見つけた色が出る |
 | `set_lyrics` | 歌詞を入れる（LRC・SRT・VTT・Whisper / Suno の JSON は時刻付き、テキストは 1 行 1 フレーズ）。Suno の `aligned_words`・WhisperX などの単語ごとの時刻と拡張 LRC の `<mm:ss.xx>` は**語の時刻**として残り、行の中の句（カット）が、その語を歌う時刻で切り替わる。`wordTimed` に語の時刻を持つ行の数が返る |
 | `load_song` | 曲を読み込む（長さとテンポを解析） |
@@ -134,6 +135,8 @@ MCP サーバーは、作業フォルダの `jizura_runs/<日時>_<名前>/` に
 # 書き出し（画面比を 2 つ指定すると、mv_16x9.mp4 と mv_9x16.mp4 の 2 本）
 python3 tools/jizura_cli.py render --lyrics suno.json --song song.mp3 --media pics/ \
     --theme ballad --aspect 16:9 --aspect 9:16 --out out/mv.mp4 --save-project out/mv.jizura.json
+# 素材ごと 1 つのファイルにも残す（別の PC で「開く」と、画像・動画・フォント・曲まで戻る）
+#   … --save-bundle out/mv.jizura.zip
 
 # 確認用のフレーム（歌詞の行から均等に 6 枚）
 python3 tools/jizura_cli.py preview --lyrics suno.json --media pics/ --theme ballad --count 6 --out-dir shots/
