@@ -57,7 +57,7 @@ async def main():
             for aspect in ('16:9', '9:16'):
                 await ev('(a) => {J.ui.project.aspect=a; J.uiApi.replan();}', aspect)
                 await pg.wait_for_timeout(80)
-                results = await ev("""() => {
+                results = await ev("""async () => {
                   const S=J.ui, c=S.project.media.tracks.front.cuts[0], out=[];
                   for (const [hold, enter, time, rot] of [['push','cut',10,0],['drift','cut',10,35],
                       ['kenburns','cut',10,-25],['pan','cut',10,15],['still','slide',0.5,20],['still','zoom',0.5,-15]]) {
@@ -73,7 +73,7 @@ async def main():
                       if(d[3]<40 || !((d[0]>235&&d[1]<4)||(d[1]>215&&d[0]<4))) continue;
                       const near=x.getImageData(px-1,py-1,3,3).data;
                       if(near.some((v,i)=>Math.abs(v-d[i%4])>2)) continue;
-                      const col=J.media.pickColor(c,r.left+(px+0.5)/cv.width*r.width,r.top+(py+0.5)/cv.height*r.height);
+                      const col=await J.media.pickColor(c,r.left+(px+0.5)/cv.width*r.width,r.top+(py+0.5)/cv.height*r.height);
                       const rgb=col&&[1,3,5].map(i=>parseInt(col.slice(i,i+2),16)); checked++;
                       if(!rgb||rgb.some((v,i)=>Math.abs(v-d[i])>8)) wrong++;
                     }
@@ -83,7 +83,30 @@ async def main():
                 }""")
                 for r in results:
                     ok(r['checked'] > 0 and r['wrong'] == 0, f'{aspect}: picker matches rendered motion/rotation {r}')
-            await ev("() => {const c=J.ui.project.media.tracks.front.cuts[0];Object.assign(c,{hold:'still',enter:'cut'});c.rect.rot=0;J.ui.project.aspect='16:9';J.uiApi.replan();J.uiApi.seek(6.5);}")
+            # Wipes clip in screen space, before rotation. Probe visible and hidden halves of the actual render.
+            for aspect in ('16:9', '9:16'):
+                await ev('(a) => {J.ui.project.aspect=a;J.uiApi.replan();}',aspect)
+                await pg.wait_for_timeout(80)
+                results=await ev("""async () => {
+                  const S=J.ui,c=S.project.media.tracks.front.cuts[0],out=[];
+                  Object.assign(c,{hold:'still',enter:'wipe',exit:'wipe'});c.rect.rot=25;J.uiApi.replan();
+                  const P=S.plan,pc=P.media.front.cuts[0],r=document.getElementById('view').getBoundingClientRect();
+                  for(const phase of ['enter','exit']) for(const dir of ['L','R','U','D']) {
+                    pc.dir=dir;const time=phase==='enter'?pc.start+pc.inDur/2:pc.end-pc.outDur/2;S.t=time;
+                    const cv=document.createElement('canvas');cv.width=P.W/4;cv.height=P.H/4;
+                    const x=cv.getContext('2d');x.scale(.25,.25);J.media.drawTrack(x,P,time,'front',{scale:.25});
+                    let visible=0,hidden=0,wrong=0;
+                    for(const [xx,yy] of [[.4,.4],[.6,.4],[.4,.6],[.6,.6]]) {
+                      const px=Math.floor(xx*cv.width),py=Math.floor(yy*cv.height),d=x.getImageData(px,py,1,1).data;
+                      const col=await J.media.pickColor(c,r.left+(px+.5)/cv.width*r.width,r.top+(py+.5)/cv.height*r.height);
+                      if(d[3]>250){visible++;if(!col)wrong++;}else if(d[3]===0){hidden++;if(col!==null)wrong++;}
+                    }
+                    out.push({phase,dir,visible,hidden,wrong});
+                  }return out;
+                }""")
+                for r in results:
+                    ok(r['visible']>0 and r['hidden']>0 and r['wrong']==0,f'{aspect}: wipe only picks visible media {r}')
+            await ev("() => {const c=J.ui.project.media.tracks.front.cuts[0];Object.assign(c,{hold:'still',enter:'cut',exit:'cut'});c.rect.rot=0;J.ui.project.aspect='16:9';J.uiApi.replan();J.uiApi.seek(6.5);}")
             await pg.wait_for_timeout(100)
             key = pg.locator('#mediaFront .key').first
             await key.select_option('auto'); await key.select_option('spoid'); await key.select_option('')
@@ -120,24 +143,60 @@ async def main():
                 await jz.add_timed_media('clock.mp4',0,track='front',x=pos,size=.4,clip_start=start,enter='cut',exit='cut')
             await ev("() => {J.mediaPlace.select(J.ui.project.media.tracks.front.cuts[0].id);J.uiApi.seek(2);}")
             await pg.wait_for_timeout(100)
+            # Start with the ordinary preview; no prepareFrame/export captures exist yet.
+            await pg.wait_for_function("() => {const a=[...J.mediaAssets.values()].find(a=>a.type==='video');return a&&!a.el.seeking&&Math.abs(a.el.currentTime-2)<.05;}")
+            ok(await ev("() => [...J.mediaAssets.values()].every(a=>!a.caps||a.caps.length===0)"),'ordinary preview has no export captures')
+            await pg.locator('#mediaFront .key').nth(1).select_option('spoid')
+            b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+            await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[1].chroma?.color")
+            live_key=(await ev(FRONT))[1]['chroma']['color']
+            ok(await ev("() => {const a=[...J.mediaAssets.values()].find(a=>a.type==='video');return Math.abs(a.el.currentTime-2)<.05;}"),'sampling does not seek the shared preview element')
+            await ev("() => {delete J.ui.project.media.tracks.front.cuts[1].chroma;J.uiApi.replan();}")
             r=await ev("""async () => {
               const S=J.ui;await J.media.prepareFrame(S.plan,2);
               const cv=document.createElement('canvas');cv.width=960;cv.height=540;
               new J.Renderer().frame(cv.getContext('2d'),S.plan,2,{scale:960/S.plan.W,noPost:true,noHud:true});
               const r=document.getElementById('view').getBoundingClientRect();
-              return S.project.media.tracks.front.cuts.map(c=>({
+              return await Promise.all(S.project.media.tracks.front.cuts.map(async c=>({
                 rendered:Array.from(cv.getContext('2d').getImageData(Math.round((.5+c.rect.x)*960),270,1,1).data).slice(0,3),
-                picked:J.media.pickColor(c,r.left+r.width*(.5+c.rect.x),r.top+r.height*.5)}));
+                picked:await J.media.pickColor(c,r.left+r.width*(.5+c.rect.x),r.top+r.height*.5)})));
             }""")
             ok(abs(r[0]['rendered'][0]-r[1]['rendered'][0])>30, 'fixture renders two different clip times')
             for i,c in enumerate(r):
                 rgb=[int(c['picked'][k:k+2],16) for k in (1,3,5)] if c['picked'] else []
                 ok(len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,c['rendered'])),f'video cut {i+1}: picker uses its displayed frame {c}')
+            expected_live='#'+''.join(f'{v:02x}' for v in r[1]['rendered'])
+            ok(live_key==expected_live,f'ordinary preview click samples selected cut time ({live_key}, expected {expected_live})')
             await pg.locator('#mediaFront .key').first.select_option('spoid')
             b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+            await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[0].chroma?.color")
             key=(await ev(FRONT))[0].get('chroma',{}).get('color')
             expected='#'+''.join(f'{v:02x}' for v in r[0]['rendered'])
             ok(key==expected, f'actual video eyedropper click stores selected frame colour ({key}, expected {expected})')
+            zero=await ev("""async () => {
+              J.uiApi.seek(0);const c=J.ui.project.media.tracks.front.cuts[0],r=document.getElementById('view').getBoundingClientRect();
+              return await J.media.pickColor(c,r.left+r.width*(.5+c.rect.x),r.top+r.height*.5);
+            }""")
+            rgb=[int(zero[k:k+2],16) for k in (1,3,5)] if zero else []
+            ok(len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,[30,0,40])),f'a new decoder samples the first frame at time zero ({zero})')
+            # Hold a decoder result so a mode change can arrive before the asynchronous sample completes.
+            for cancel in ('Off','Escape','deselect'):
+                await ev("""() => {
+                  const c=J.ui.project.media.tracks.front.cuts[0];delete c.chroma;J.uiApi.replan();J.mediaPlace.select(c.id);
+                  const original=J.media.sampleVideoFrame;
+                  J.media.sampleVideoFrame=(...args)=>new Promise(resolve=>{
+                    window.releasePick=()=>{J.media.sampleVideoFrame=original;resolve('#b20126');};
+                  });
+                }""")
+                await pg.locator('#mediaFront .key').first.select_option('spoid')
+                b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+                await pg.wait_for_function("() => typeof window.releasePick==='function'")
+                if cancel=='Off': await pg.locator('#mediaFront .key').first.select_option('')
+                elif cancel=='Escape': await pg.keyboard.press('Escape')
+                else: await ev('() => J.mediaPlace.select(null)')
+                await ev('() => {window.releasePick();delete window.releasePick;}')
+                await pg.wait_for_timeout(30)
+                ok('chroma' not in (await ev(FRONT))[0] and not await ev(ARMED),f'{cancel} ignores a video sample that finishes after cancellation')
             ok(not jz.errors,f'no page errors {jz.errors[:3]}')
     print(f'FAILED: {len(failures)}' if failures else 'all placement regression checks passed')
     return 1 if failures else 0

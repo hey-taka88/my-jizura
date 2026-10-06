@@ -16,7 +16,7 @@ const L = (ja, en) => (JA ? ja : en);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 const $ = id => document.getElementById(id);
 const r3 = x => Math.round(x * 1000) / 1000;
-let api = null, S = null, sel = null, spoid = false, box = null, raf = 0, drag = null, rowsKey = '';
+let api = null, S = null, sel = null, spoid = false, box = null, raf = 0, drag = null, rowsKey = '', pickAbort = null;
 
 const CSS = `
 .media-front { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -193,44 +193,60 @@ function onCancel() {
 
 /* ---------- スポイト ---------- */
 function startSpoid() {
-  spoid = true; $('viewport').classList.add('media-spoid');
+  stopSpoid(); spoid = true; $('viewport').classList.add('media-spoid');
   api.toast(L('プレビューで、抜きたい色（前景の画像の上）をクリックしてください（Esc でやめる）', 'Click the colour to take out, on the picture in the preview (Esc to cancel)'));
 }
-function stopSpoid() { spoid = false; const vp = $('viewport'); if (vp) vp.classList.remove('media-spoid'); }
+function stopSpoid() {
+  spoid = false; if (pickAbort) { pickAbort.abort(); pickAbort = null; }
+  const vp = $('viewport'); if (vp) vp.classList.remove('media-spoid');
+}
 /* the colour of the picture itself under a point of the preview, or null outside it — through where it is drawn at this moment
    (its motion and 登場・退場 included: M.cutBox, as the renderer), or where it is placed when it is not on screen now */
-M.pickColor = (c, clientX, clientY) => {
+M.pickColor = async (c, clientX, clientY, signal) => {
   const g = geometry(c); if (!g) return null;
   const a = J.mediaAssets.get(c.assetId); if (!a) return null;
   const P = S.plan, pc = planCut(c.id), t0 = S.t;
   let cx = g.cx, cy = g.cy, w = g.w, h = g.h, turn = g.R.rot * Math.PI / 180;
   if (pc && M.cutBox && pc.start <= t0 && t0 < pc.end) {
     const B = M.cutBox(P, pc, t0, P.W, P.H, M.layerFx(pc, t0), g.meta.w, g.meta.h);
+    if (B.clip) {
+      const x = (clientX - g.cr.left) / g.k, y = (clientY - g.cr.top) / g.k, q = B.clip;
+      if (x < q.x || x > q.x + q.w || y < q.y || y > q.y + q.h) return null;
+    }
     cx = g.cr.left + (B.x0 + B.dw / 2) * g.k; cy = g.cr.top + (B.y0 + B.dh / 2) * g.k; w = B.dw * g.k; h = B.dh * g.k; turn = B.turn;
   }
   const t = -turn, dx = clientX - cx, dy = clientY - cy;
   const u = (dx * Math.cos(t) - dy * Math.sin(t)) / w + 0.5, v = (dx * Math.sin(t) + dy * Math.cos(t)) / h + 0.5;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-  // The shared video element can hold another cut's time; use the same per-cut frame as the renderer.
+  const sample = src => {
+    if (!src) return null;
+    const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+    const cv = document.createElement('canvas'); cv.width = cv.height = 1;
+    const x = cv.getContext('2d', { willReadFrequently: true });
+    x.drawImage(src, Math.min(sw - 1, Math.floor(u * sw)), Math.min(sh - 1, Math.floor(v * sh)), 1, 1, 0, 0, 1, 1);
+    const d = x.getImageData(0, 0, 1, 1).data;
+    return '#' + [d[0], d[1], d[2]].map(n => n.toString(16).padStart(2, '0')).join('');
+  };
   const vt = a.type === 'video' && pc ? M.videoTimes(P, pc, t0) : null;
-  const src = a.type === 'video' ? (vt ? M.videoFrame(a, vt.main) : a.thumb) : a.source;
-  if (!src) return null;
-  const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
-  const cv = document.createElement('canvas'); cv.width = cv.height = 1;
-  const x = cv.getContext('2d', { willReadFrequently: true });
-  x.drawImage(src, Math.min(sw - 1, Math.floor(u * sw)), Math.min(sh - 1, Math.floor(v * sh)), 1, 1, 0, 0, 1, 1);
-  const d = x.getImageData(0, 0, 1, 1).data;
-  return '#' + [d[0], d[1], d[2]].map(n => n.toString(16).padStart(2, '0')).join('');
+  // Normal preview shares one decoder across cuts. Decode this requested time independently, even without export captures.
+  return vt ? M.sampleVideoFrame(a, vt.main, sample, signal) : sample(a.type === 'video' ? a.thumb : a.source);
 };
-function onViewClick(e) {
+async function onViewClick(e) {
   if (!spoid) return;
   e.preventDefault(); e.stopPropagation();
-  const c = sel && cutById(sel);
-  const col = c && M.pickColor(c, e.clientX, e.clientY);
-  if (!col) { api.toast(L('前景の画像の上をクリックしてください', 'Click on the picture over the lyrics')); return; }
-  stopSpoid();
-  c.chroma = Object.assign({ tol: 0.1, soft: 0.08, spill: 0.6 }, c.chroma, { color: col });
-  commit(L(`${col} を抜きます`, `Taking ${col} out`));
+  const c = sel && cutById(sel), plan = S.plan;
+  if (pickAbort) pickAbort.abort();
+  const request = new AbortController(); pickAbort = request;
+  try {
+    const col = c && await M.pickColor(c, e.clientX, e.clientY, request.signal);
+    if (request.signal.aborted || !spoid || !c || cutById(sel) !== c || S.plan !== plan) return;
+    if (!col) { api.toast(L('前景の画像の上をクリックしてください', 'Click on the picture over the lyrics')); return; }
+    stopSpoid();
+    c.chroma = Object.assign({ tol: 0.1, soft: 0.08, spill: 0.6 }, c.chroma, { color: col });
+    commit(L(`${col} を抜きます`, `Taking ${col} out`));
+  } catch (err) {
+    if (!request.signal.aborted) api.toast(L('このフレームの色を読み取れませんでした。もう一度お試しください', 'Could not read this frame. Please try again.'));
+  } finally { if (pickAbort === request) pickAbort = null; }
 }
 
 J.mediaPlace = {

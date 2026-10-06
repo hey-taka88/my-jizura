@@ -56,6 +56,12 @@ M.cutBox = (plan, c, t, W, H, fx, sw, sh) => {
     const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);   // a filled frame never shows its edge while drifting
     px = J.clamp(px, -mx, mx); py = J.clamp(py, -my, my);
   }
+  // The wipe clips screen space before rotation; the picker uses this same visible rectangle.
+  if (clip) {
+    const k = ease(clip.k), d = clip.d;
+    clip = { x: d === 'R' ? W * (1 - k) : 0, y: d === 'D' ? H * (1 - k) : 0,
+      w: d === 'L' || d === 'R' ? W * k : W, h: d === 'U' || d === 'D' ? H * k : H };
+  }
   let x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
   if (R) { x0 += R.x * W; y0 += R.y * H; }
   return { x0, y0, dw, dh, turn: R && R.rot ? R.rot * Math.PI / 180 : 0, a, clip, base };
@@ -94,10 +100,8 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
   let { x0, y0 } = box;
   if (clip) {
-    const k = ease(clip.k), d = clip.d;
     ctx.save(); ctx.beginPath();
-    if (d === 'L') ctx.rect(0, 0, W * k, H); else if (d === 'R') ctx.rect(W * (1 - k), 0, W * k, H);
-    else if (d === 'U') ctx.rect(0, 0, W, H * k); else ctx.rect(0, H * (1 - k), W, H * k);
+    ctx.rect(clip.x, clip.y, clip.w, clip.h);
     ctx.clip();
   }
   if (turn) {                                  // turned around its own centre

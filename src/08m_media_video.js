@@ -129,6 +129,19 @@ async function seekExact(el, time, signal) {
   el.currentTime = tt;
   await once(el, 'seeked', 15000, signal);
 }
+/* A one-off user sample needs this cut's time, without seeking or pausing the shared preview/export element.
+   The temporary decoder is released even if the user cancels while it is loading. `sample` reads only the needed pixel. */
+M.sampleVideoFrame = async (a, time, sample, signal) => {
+  if (signal && signal.aborted) throw new Error('aborted');
+  const el = mkEl();
+  try {
+    el.src = a.url;
+    await seekExact(el, time, signal);
+    return sample(el);
+  } finally {
+    el.pause(); el.removeAttribute('src'); el.load();
+  }
+};
 const capKey = time => Math.round(time * 1000);
 M.prepareFrame = async (plan, t, signal) => {
   if (!plan || !plan.media) return;
