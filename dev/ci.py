@@ -39,6 +39,8 @@ def browser_checks():
         ('video_e2e.py', []),
         ('front_e2e.py', ['--browser', 'chromium', '--require-export']),
         ('chroma_e2e.py', ['--browser', 'chromium']),
+        ('place_e2e.py', ['--browser', 'chromium']),
+        ('place_regression_e2e.py', ['--browser', 'chromium']),
     ):
         run(sys.executable, f'dev/{script}', *args)
     run(sys.executable, 'dev/build_test.py', 'all', '--all-packs')

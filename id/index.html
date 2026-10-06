@@ -4783,20 +4783,13 @@ function lastBeat(B, t) {
   return ans < 0 ? null : B[ans];
 }
 
-/* one cut at time t with opacity a. fx = { in, out } (0..1, 1 = fully shown) for 登場 / 退場, null = none */
-function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
-  const asset = J.mediaAssets.get(c.assetId);
-  if (!asset || a <= 0.001) return false;
-  let vt = null, frame = null;
-  if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
-    vt = M.videoTimes(plan, c, t);
-    frame = vt && M.videoFrame(asset, vt.main);
-    if (!frame) return false;
-  } else if (!asset.source) return false;
-  const sw = asset.w, sh = asset.h, R = c.rect;
+/* where a cut is drawn at time t (design units): its size, top-left corner, turn and 登場・退場 (fx = { in, out }, 0..1) — also what
+   the eyedropper of the placement editor maps a click through (11z_media_place.js). a: what the opacity is multiplied by */
+M.cutBox = (plan, c, t, W, H, fx, sw, sh) => {
+  const R = c.rect;
   const base = R ? W * R.w / sw : c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
   const lt = t - c.start, p = J.clamp(lt / Math.max(0.1, c.dur)), hp = c.hp || { sign: 1, ph: 0, per: 7 };
-  let z = 1, px = 0, py = 0, pan = 0;
+  let z = 1, px = 0, py = 0, pan = 0, a = 1;
   switch (c.hold) {
     case 'kenburns': if (c.kb) { const e = ease(p); z = J.lerp(c.kb.s0, c.kb.s1, e); px = J.lerp(c.kb.x0, c.kb.x1, e) * W; py = J.lerp(c.kb.y0, c.kb.y1, e) * H; } break;
     case 'pan': z = ZMAX.pan; pan = (0.5 - 0.5 * Math.cos(Math.PI * (0.15 + 0.7 * p))) * 2 - 1; break;    // across, at an even pace
@@ -4815,13 +4808,44 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   };
   if (fx && fx.in != null) move(c.enter, fx.in, false);
   if (fx && fx.out != null) move(c.exit, fx.out, true);
-  if (a <= 0.001) return false;
   const dw = sw * base * z, dh = sh * base * z;
   if (pan) { const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2); if (mx >= my) px = pan * mx * hp.sign; else py = pan * my * hp.sign; }
   if (!R && c.fit !== 'contain' && !(fx && (fx.in != null || fx.out != null) && (c.enter === 'slide' || c.exit === 'slide'))) {
     const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);   // a filled frame never shows its edge while drifting
     px = J.clamp(px, -mx, mx); py = J.clamp(py, -my, my);
   }
+  // The wipe clips screen space before rotation; the picker uses this same visible rectangle.
+  if (clip) {
+    const k = ease(clip.k), d = clip.d;
+    clip = { x: d === 'R' ? W * (1 - k) : 0, y: d === 'D' ? H * (1 - k) : 0,
+      w: d === 'L' || d === 'R' ? W * k : W, h: d === 'U' || d === 'D' ? H * k : H };
+  }
+  let x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
+  if (R) { x0 += R.x * W; y0 += R.y * H; }
+  return { x0, y0, dw, dh, turn: R && R.rot ? R.rot * Math.PI / 180 : 0, a, clip, base };
+};
+/* 登場・退場 of a front layer at t (each comes and goes by itself) */
+M.layerFx = (c, t) => {
+  const lt = t - c.start, fx = {};
+  if (c.enter !== 'cut' && c.inDur > 0 && lt < c.inDur) fx.in = ease(lt / c.inDur);
+  if (c.exit !== 'cut' && c.outDur > 0 && c.end - t < c.outDur) fx.out = ease((c.end - t) / c.outDur);
+  return fx;
+};
+
+/* one cut at time t with opacity a. fx = { in, out } (0..1, 1 = fully shown) for 登場 / 退場, null = none */
+function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
+  const asset = J.mediaAssets.get(c.assetId);
+  if (!asset || a <= 0.001) return false;
+  let vt = null, frame = null;
+  if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
+    vt = M.videoTimes(plan, c, t);
+    frame = vt && M.videoFrame(asset, vt.main, c);
+    if (!frame) return false;
+  } else if (!asset.source) return false;
+  const sw = asset.w, sh = asset.h;
+  const box = M.cutBox(plan, c, t, W, H, fx, sw, sh), { dw, dh, turn, clip, base } = box;
+  a *= box.a;
+  if (a <= 0.001) return false;
   // the size bucket depends on the cut's largest size, not on this frame's zoom (no new copy while zooming)
   const zMax = c.hold === 'kenburns' && c.kb ? Math.max(c.kb.s0, c.kb.s1) : ZMAX[c.hold] || 1;
   let src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
@@ -4832,14 +4856,10 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
   const step = frame ? 1 : Math.max(src.width / (dw * scale), src.height / (dh * scale));
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
-  let x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
-  const turn = R && R.rot ? R.rot * Math.PI / 180 : 0;
-  if (R) { x0 += R.x * W; y0 += R.y * H; }
+  let { x0, y0 } = box;
   if (clip) {
-    const k = ease(clip.k), d = clip.d;
     ctx.save(); ctx.beginPath();
-    if (d === 'L') ctx.rect(0, 0, W * k, H); else if (d === 'R') ctx.rect(W * (1 - k), 0, W * k, H);
-    else if (d === 'U') ctx.rect(0, 0, W, H * k); else ctx.rect(0, H * (1 - k), W, H * k);
+    ctx.rect(clip.x, clip.y, clip.w, clip.h);
     ctx.clip();
   }
   if (turn) {                                  // turned around its own centre
@@ -4848,9 +4868,9 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   }
   ctx.globalAlpha = a;
   ctx.drawImage(src, x0, y0, dw, dh);
-  // loop seam (exports): the start of the clip fades in over its end
+  // loop seam: the start of the clip fades in over its end when both frames are available
   if (vt && vt.alt != null && vt.k > 0) {
-    let s2 = M.videoCap(asset, vt.alt);
+    let s2 = M.videoFrame(asset, vt.alt, c, true);
     if (s2 && c.chroma && M.keyed) s2 = M.keyed(asset, s2, c, 1);
     if (s2 && c.treat && c.treat !== 'none' && M.treated) s2 = M.treated(asset, s2, c, plan, 1);
     if (s2) { ctx.globalAlpha = a * vt.k; ctx.drawImage(s2, x0, y0, dw, dh); }
@@ -4936,11 +4956,8 @@ function drawLayers(ctx, plan, P, t, W, H, scale) {
     ctx.imageSmoothingEnabled = true;
     ctx.globalCompositeOperation = BLEND[P.blend] || 'source-over';
     for (const c of cs) {
-      const lt = t - c.start, fx = {};
-      if (c.enter !== 'cut' && c.inDur > 0 && lt < c.inDur) fx.in = ease(lt / c.inDur);
-      if (c.exit !== 'cut' && c.outDur > 0 && c.end - t < c.outDur) fx.out = ease((c.end - t) / c.outDur);
       ctx.save();
-      try { drawCut(ctx, plan, c, t, W, H, P.opacity * c.opacity, scale, fx); } finally { ctx.restore(); }
+      try { drawCut(ctx, plan, c, t, W, H, P.opacity * c.opacity, scale, M.layerFx(c, t)); } finally { ctx.restore(); }
     }
   } catch (e) { console.warn('media front', e); }
   finally { ctx.restore(); }
@@ -5163,7 +5180,7 @@ M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.
 M.AUTO = ['off', 'perLine'];
 M.ORDER = ['sequential', 'random'];
 // how a video clip shorter than its cut fills it (AI clips are 5–10 s, a cut can be a whole verse):
-//   loop: from the start again (with a short cross-fade at the seam when exporting) · pingpong: forwards, then backwards ·
+//   loop: from the start again (with a short cross-fade at the seam in preview and export) · pingpong: forwards, then backwards ·
 //   hold: stop on the last frame · beat: back to the start on every bar (N beats) of the song, looping inside a long bar
 M.EXTEND = ['loop', 'pingpong', 'hold', 'beat'];
 M.RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -5198,13 +5215,13 @@ function asset(a) {
   if (a.type === 'video') o.duration = num(a.duration, 0, 86400, 0);
   return o;
 }
-function cut(c, i) {
+function cut(c) {
   if (!isObj(c)) return null;
   const lineRef = isObj(c.lineRef) && Number.isInteger(+c.lineRef.line) && +c.lineRef.line >= 0 ? { line: Math.min(+c.lineRef.line, 99999) } : null;
   const start = c.start == null ? null : num(c.start, 0, 86400, null);
   if (!lineRef && start == null) return null;                       // a cut is tied to a lyric line or to a time
   const o = {
-    id: M.ID.test(c.id) ? c.id : 'c' + i,
+    id: typeof c.id === 'string' && M.ID.test(c.id) ? c.id : null,
     assetId: c.assetId === '' ? '' : (M.ID.test(c.assetId) ? c.assetId : ''),   // '' = no image here
     lineRef, start, end: c.end == null ? null : num(c.end, 0, 86400, null),
     fit: pick(c.fit, M.FIT.concat(['auto']), 'auto'),
@@ -5239,7 +5256,7 @@ function join(v, d) { return v === 'auto' || M.JOIN.includes(v) || M.TRANS_KEYS.
 function track(t, d) {
   t = isObj(t) ? t : {};
   return {
-    cuts: (Array.isArray(t.cuts) ? t.cuts : []).slice(0, M.MAX_CUTS).map((c, i) => cut(c, i)).filter(Boolean),
+    cuts: (Array.isArray(t.cuts) ? t.cuts : []).slice(0, M.MAX_CUTS).map(cut).filter(Boolean),
     opacity: num(t.opacity, 0, 1, d.opacity), blend: pick(t.blend, M.BLEND, d.blend), dim: num(t.dim, 0, 0.9, d.dim),
   };
 }
@@ -5264,7 +5281,17 @@ M.normalize = m => {
     text: M.normalizeText ? M.normalizeText(m.text) : d.text };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
   // a cut may only point at an asset of this project ('' = deliberately none); cuts of a picture that is gone are dropped
-  for (const k of M.TRACKS) out.tracks[k].cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
+  for (const k of M.TRACKS) {
+    const cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
+    // Placement editing addresses cuts by ID. Keep existing unique IDs, including ones later in the list.
+    const reserved = new Set(cuts.map(c => c.id).filter(Boolean)), used = new Set();
+    let nextId = 0;
+    for (const c of cuts) {
+      if (!c.id || used.has(c.id)) { let id; do { id = 'c' + nextId++; } while (reserved.has(id)); c.id = id; reserved.add(id); }
+      used.add(c.id);
+    }
+    out.tracks[k].cuts = cuts;
+  }
   return out;
 };
 
@@ -5307,7 +5334,10 @@ function resolveTrack(m, k, plan) {
   const out = { cuts: [], opacity: T.opacity, blend: T.blend, dim: T.dim };
   const byLine = new Map(), timed = [];
   for (const c of T.cuts) { if (c.lineRef) byLine.set(c.lineRef.line, c); else timed.push(c); }
-  const next = ids.length ? sequence(ids, A) : null;
+  // a picture placed over the lyrics (a logo, a character) is not also one of the automatic backgrounds
+  const onFront = k === 'back' ? new Set(m.tracks.front.cuts.map(c => c.assetId).filter(Boolean)) : null;
+  const autoIds = onFront && onFront.size ? ids.filter(id => !onFront.has(id)) : ids;
+  const next = autoIds.length ? sequence(autoIds, A) : null;
   const lines = (plan.lines || []).slice().sort((a, b) => a.start - b.start);
   // what each lyric line shows: a picture chosen for that line (own), or the next one of the automatic order
   const auto = [], own = [];
@@ -5397,6 +5427,7 @@ function resolveTrack(m, k, plan) {
       v: isVideo ? clip(a, Object.assign({}, A.video, src && src.video)) : null,
       opacity: src ? src.opacity : 1, seed, rect: src && src.rect ? Object.assign({}, src.rect) : null,   // placed by hand (x, y, w, rot)
       chroma: src && src.chroma ? Object.assign({}, src.chroma) : null,                                      // クロマキー
+      id: src && src.id ? src.id : null,                                                                     // the project cut it came from (配置編集)
       // ゆっくり寄る / 引く: scale s0 → s1 and a small drift (fractions of the frame), kept inside the picture
       kb: { s0: zoomIn ? 1 : 1 + z, s1: zoomIn ? 1 + z : 1, x0: r.range(-0.03, 0.03), y0: r.range(-0.02, 0.02), x1: r.range(-0.03, 0.03), y1: r.range(-0.02, 0.02) },
       // パン / 漂う: which way, and where the float starts
@@ -5882,7 +5913,8 @@ M.applyText = (m, plan, project) => {
    my-jizura (fork) — media layer: video clips (Phase 2)
    · a clip is kept as its file (Blob → object URL) and shown through one muted <video> element
    · preview  : M.syncPreview() lets the element play and nudges playbackRate to follow the song (a seek only on a
-                jump: a loop seam, a bar restart, ping-pong backwards, scrubbing) — every seek stalls the decoder
+                jump: a loop seam, a bar restart, ping-pong backwards, scrubbing). Shared uses at different times
+                are copied with the same decoder, keeping the last complete pictures while preparing the next ones.
    · export   : M.prepareFrame() seeks every needed clip to its exact time for each output frame (awaited by the
                 MP4 / PNG loops); when one clip is needed at two times (a loop seam), the other time is copied first
    · at most MAX_LIVE elements hold a decoder; the least recently used ones are unloaded (src removed)
@@ -5894,10 +5926,11 @@ const MAX_LIVE = 3;
 const VIDEO_EXT = /\.(mp4|m4v|webm|mov|ogv)$/i;
 M.isVideoFile = f => !!f && (/^video\//.test(f.type || '') || VIDEO_EXT.test(f.name || ''));
 
-const once = (el, ev, ms, signal) => new Promise((res, rej) => {
+const once = (el, ev, ms, signal, ready) => new Promise((res, rej) => {
+  if (signal && signal.aborted) { rej(new Error('aborted')); return; }
   let timer = 0;
   const done = (ok, e) => { clearTimeout(timer); el.removeEventListener(ev, onEv); el.removeEventListener('error', onErr); if (signal) signal.removeEventListener('abort', onAbort); ok ? res() : rej(e); };
-  const onEv = () => done(true), onErr = () => done(false, new Error('video error ' + (el.error ? el.error.code : ''))), onAbort = () => done(false, new Error('aborted'));
+  const onEv = () => { if (!ready || ready()) done(true); }, onErr = () => done(false, new Error('video error ' + (el.error ? el.error.code : ''))), onAbort = () => done(false, new Error('aborted'));
   el.addEventListener(ev, onEv); el.addEventListener('error', onErr);
   if (signal) signal.addEventListener('abort', onAbort);
   timer = setTimeout(() => done(false, new Error('timeout ' + ev)), ms);
@@ -5930,20 +5963,22 @@ M.releaseVideo = a => {
   if (!a || a.type !== 'video') return;
   try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {}
   if (a.url) URL.revokeObjectURL(a.url);
-  a.live = false; a.caps = [];
+  a.live = false; a.caps = []; a.preview = null;
 };
 
 /* decoder budget */
 function live(a) {
   a.lastUse = performance.now();
   if (a.live) return;
+  delete a.el.frameCheckFailedAt;
+  delete a.el.pendingPresentation;
   a.el.src = a.url; a.live = true;
   try { a.el.load(); } catch (e) {}
 }
-function trim(keep) {
+function trim(keep, limit = MAX_LIVE) {
   const vids = [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live && !keep.has(a.id)).sort((p, q) => p.lastUse - q.lastUse);
   let n = [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live).length;
-  for (const a of vids) { if (n <= MAX_LIVE) break; try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {} a.live = false; n--; }
+  for (const a of vids) { if (n <= limit) break; try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {} a.live = false; n--; }
 }
 M.liveVideos = () => [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live).length;
 
@@ -5965,15 +6000,42 @@ function needed(plan, t) {
 }
 
 /* preview: follow the song with as few seeks as possible */
+let preparing = 0;
 let exportUntil = 0;                          // an export owns the clips while it runs (the preview must not seek them)
+let previewJob = null;
+M.cancelPreview = () => { if (previewJob) { previewJob.latest = null; previewJob.controller.abort(); } };
 M.syncPreview = (plan, t, playing, redraw) => {
-  if (!plan || !plan.media || performance.now() < exportUntil) return;
+  if (!plan || !plan.media || preparing || performance.now() < exportUntil) return;
+  if (previewJob) {
+    previewJob.latest = { plan, t, playing, redraw };
+    let obsolete = plan !== previewJob.plan || playing !== previewJob.playing || (!playing && t !== previewJob.t);
+    if (!obsolete && playing) {
+      const current = needed(plan, t).out;
+      // Coalesce ordinary progression, but never let a stalled job trail the song by over a second or retain an ended use.
+      obsolete = Math.abs(t - previewJob.t) > 1 || previewJob.shared.some(({ a, uses }) => {
+        const now = current.get(a.id) || [];
+        return now.length !== uses.length || now.some((u, i) => u.c !== uses[i].c || (u.vt.alt != null) !== (uses[i].vt.alt != null));
+      });
+    }
+    if (obsolete) previewJob.controller.abort();
+    return;
+  }
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && (a.at != null || (a.caps && a.caps.length))) { a.at = null; a.caps = []; }   // export copies are stale now
   const { out, next } = needed(plan, t);
+  const shared = [];
+  for (const a of J.mediaAssets.values()) if (a.type === 'video') a.previewNeeded = false;
   for (const [id, uses] of out) {
     const a = J.mediaAssets.get(id);
     if (!a || a.type !== 'video') continue;
     live(a);
+    recoveredPresentation(a.el); // observe normal preview progress before a loop can revisit the failed timestamp
+    // One element cannot show different clip times at once. Keep a picture for each use, with no extra decoder.
+    if (new Set(uses.flatMap(({ vt }) => vt.alt == null ? [capKey(vt.main)] : [capKey(vt.main), capKey(vt.alt)])).size > 1) {
+      a.previewNeeded = true;
+      const key = uses.map(({ c, vt }) => [c.id, capKey(vt.main), vt.alt == null ? null : capKey(vt.alt)].join(':')).join('|');
+      if (!a.preview || a.preview.plan !== plan || a.preview.key !== key) shared.push({ a, uses, key });
+      continue;
+    }
     const { c, vt } = uses[0], el = a.el;
     const target = vt.alt != null && vt.k > 0.5 ? vt.alt : vt.main;
     // can the element simply play forward from here? (not at a seam, not backwards, not held on the last frame)
@@ -5997,54 +6059,154 @@ M.syncPreview = (plan, t, playing, redraw) => {
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && !out.has(a.id) && a.el && !a.el.paused) a.el.pause();
   for (const id of next) { const a = J.mediaAssets.get(id); if (a && a.type === 'video' && !a.live && M.liveVideos() < MAX_LIVE) live(a); }
   trim(new Set([...out.keys(), ...next]));
+  if (shared.length) queuePreview(plan, t, playing, shared, redraw);
 };
 M.pauseVideos = () => { for (const a of J.mediaAssets.values()) if (a.type === 'video' && a.el && !a.el.paused) a.el.pause(); };
 
+/* the frame the element shows now ({ ts, dur } in s), or null when this browser cannot tell (no WebCodecs, no frame yet) */
+function shown(el) {
+  if (typeof VideoFrame !== 'function' || el.readyState < 2) return null;
+  try { const f = new VideoFrame(el), r = { ts: f.timestamp / 1e6, dur: (f.duration || 0) / 1e6 }; f.close(); return r; } catch (e) { return null; }
+}
+function recoveredPresentation(el) {
+  if (el.frameCheckFailedAt == null) return true;
+  const frame = shown(el);
+  if (!frame || Math.abs(frame.ts - el.frameCheckFailedAt) < 1e-6) return false;
+  delete el.frameCheckFailedAt;
+  return true;
+}
 /* export: every clip needed for the frame at t is at its exact time before the frame is drawn */
 async function seekExact(el, time, signal) {
   if (el.readyState < 1) await once(el, 'loadedmetadata', 20000, signal);
+  if (signal && signal.aborted) throw new Error('aborted');
+  if (!recoveredPresentation(el)) throw new Error('video presentation is still stalled');
   const tt = J.clamp(time, 0, Math.max(0, el.duration - 1 / 240));
   if (!el.paused) el.pause();
-  if (Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking) return;
-  el.currentTime = tt;
-  await once(el, 'seeked', 15000, signal);
+  const atTarget = Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking;
+  const pending = el.pendingPresentation && el.pendingPresentation.time === tt ? el.pendingPresentation : null;
+  const before = pending ? pending.before : shown(el), jump = pending ? pending.jump : Math.abs(tt - el.currentTime);
+  const withinFrame = before && before.dur > 0 && tt >= before.ts && tt < before.ts + before.dur;
+  if (atTarget && !el.pendingPresentation && (!before || !before.dur || withinFrame)) return;
+  // Preserve this across aborts: currentTime/seeked can reach the target before its pixels are presented.
+  el.pendingPresentation = { time: tt, before, jump };
+  if (!atTarget) {
+    // Ignore old queued seeked events, allowing browser time-grid rounding (e.g. 1/600 s).
+    const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 0.01);
+    el.currentTime = tt;
+    await settled;
+  }
+  // 'seeked' can precede presentation. Even a short seek across the shown frame's timestamp interval needs a new frame.
+  // Without its duration, retain the conservative long-jump check. Slow decoding gets the normal seek timeout.
+  if (!before || (before.dur > 0 ? withinFrame : jump <= 0.5)) { delete el.pendingPresentation; return; }
+  const deadline = performance.now() + 15000;
+  while (performance.now() < deadline) {
+    const now = shown(el);
+    if (!now || Math.abs(now.ts - before.ts) > 1e-6) { delete el.pendingPresentation; return; }
+    await new Promise(r => setTimeout(r, 4));
+    if (signal && signal.aborted) throw new Error('aborted');
+  }
+  el.frameCheckFailedAt = before.ts;
+  delete el.pendingPresentation;
+  throw new Error('timeout presenting video frame at ' + tt);
 }
 const capKey = time => Math.round(time * 1000);
-M.prepareFrame = async (plan, t, signal) => {
-  if (!plan || !plan.media) return;
-  exportUntil = performance.now() + 2000;
-  M.pauseVideos();
-  const { out } = needed(plan, t);
-  for (const a of J.mediaAssets.values()) if (a.type === 'video') { a.caps = []; a.at = null; }
-  for (const [id, uses] of out) {
-    const a = J.mediaAssets.get(id);
-    if (!a || a.type !== 'video') continue;
-    live(a);
-    const times = [];
-    for (const { vt } of uses) { times.push(vt.main); if (vt.alt != null) times.push(vt.alt); }
-    const uniq = [...new Set(times.map(capKey))].map(k => k / 1000);
-    try {
-      // all but the last time are copied out; the element itself stays on the last one
-      for (let i = 0; i < uniq.length; i++) {
-        await seekExact(a.el, uniq[i], signal);
-        if (i < uniq.length - 1) {
-          const pool = a.pool || (a.pool = []);
-          const cv = pool[i] || (pool[i] = document.createElement('canvas'));
-          const k = Math.min(1, 1920 / Math.max(a.sw, a.sh));
-          cv.width = Math.round(a.sw * k); cv.height = Math.round(a.sh * k);
-          cv.getContext('2d').drawImage(a.el, 0, 0, cv.width, cv.height);
-          a.caps.push({ key: capKey(uniq[i]), cv });
+function warnSeek(a, error) {
+  const stalled = a.el.frameCheckFailedAt;
+  if (stalled == null || a.reportedFrameTimeout !== stalled) console.warn('media: clip seek failed', a.name, error);
+  a.reportedFrameTimeout = stalled;
+}
+// A shared decoder cannot seek for two frame preparations at once (export, or a user sample).
+let frameQueue = Promise.resolve();
+// Double-buffer the copied pictures: a seek must not change a frame the renderer is still using.
+function queuePreview(plan, t, playing, shared, redraw) {
+  const job = previewJob = { plan, t, playing, shared, latest: null, controller: new AbortController() };
+  const signal = job.controller.signal;
+  const prepared = frameQueue.then(async () => {
+    if (signal.aborted || preparing || performance.now() < exportUntil) return;
+    for (const { a, uses, key } of shared) {
+      if (J.mediaAssets.get(a.id) !== a) continue;
+      const bank = a.preview && a.preview.bank === 0 ? 1 : 0;
+      const banks = a.previewPools || (a.previewPools = [[], []]), pool = banks[bank], copies = new Map();
+      try {
+        for (const { vt } of uses) for (const time of [vt.main, vt.alt]) {
+          if (time == null || copies.has(capKey(time))) continue;
+          await seekExact(a.el, time, signal);
+          const i = copies.size, cv = pool[i] || (pool[i] = document.createElement('canvas'));
+          const k = Math.min(1, 1920 / Math.max(a.sw, a.sh)), w = Math.round(a.sw * k), h = Math.round(a.sh * k);
+          if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+          cv.getContext('2d').drawImage(a.el, 0, 0, w, h);
+          copies.set(capKey(time), cv);
         }
-      }
-      a.at = capKey(uniq[uniq.length - 1]);
-    } catch (e) {
-      if (signal && signal.aborted) throw e;
-      console.warn('media: clip seek failed', a.name, e);           // the frame is drawn without this clip's exact picture
+        if (signal.aborted) return;
+        if (J.mediaAssets.get(a.id) !== a) continue;
+        const frames = new Map(uses.map(({ c, vt }) => [c, { main: copies.get(capKey(vt.main)), alt: vt.alt == null ? null : copies.get(capKey(vt.alt)) }]));
+        a.preview = { plan, key, bank, frames };
+      } catch (e) { if (signal.aborted) return; warnSeek(a, e); }
     }
-  }
-  trim(new Set(out.keys()));
-  exportUntil = performance.now() + 2000;
+  });
+  frameQueue = prepared.catch(() => {});
+  frameQueue.finally(() => {
+    previewJob = null;
+    if (job.latest) { const r = job.latest; M.syncPreview(r.plan, r.t, r.playing, r.redraw); }
+    if (redraw) redraw();
+  });
+}
+M.prepareFrame = (plan, t, signal, sampleCut) => {
+  M.cancelPreview(); // explicit sampling/export takes precedence over an obsolete preview request
+  const prepared = frameQueue.then(() => prepareFrame(plan, t, signal, sampleCut));
+  frameQueue = prepared.catch(() => {});
+  return prepared;
 };
+// Preserve a direct promise so the caller reads its capture before the next queued preparation starts.
+M.prepareCut = (plan, c, t, signal) => plan && c && c.type === 'video'
+  ? M.prepareFrame(plan, t, signal, c) : Promise.resolve(null);
+M.releaseVideos = () => { exportUntil = 0; };
+// sampleCut prepares the selected cut even outside its interval, without the export cooldown.
+async function prepareFrame(plan, t, signal, sampleCut) {
+  if (!plan || !plan.media) return;
+  if (signal && signal.aborted) throw new Error('aborted');
+  preparing++;
+  if (!sampleCut) exportUntil = performance.now() + 2000;
+  try {
+    M.pauseVideos();
+    const vt = sampleCut && M.videoTimes(plan, sampleCut, t);
+    const out = sampleCut ? new Map(vt ? [[sampleCut.assetId, [{ c: sampleCut, vt }]]] : []) : needed(plan, t).out;
+    for (const a of J.mediaAssets.values()) if (a.type === 'video') { a.caps = []; a.at = null; }
+    for (const [id, uses] of out) {
+      const a = J.mediaAssets.get(id);
+      if (!a || a.type !== 'video') continue;
+      if (sampleCut && !a.live) trim(new Set([id]), MAX_LIVE - 1); // borrow a slot before reopening an inactive cut
+      live(a);
+      const times = [];
+      for (const { vt } of uses) { times.push(vt.main); if (vt.alt != null) times.push(vt.alt); }
+      const uniq = [...new Set(times.map(capKey))].map(k => k / 1000);
+      try {
+        // all but the last time are copied out; the element itself stays on the last one
+        for (let i = 0; i < uniq.length; i++) {
+          await seekExact(a.el, uniq[i], signal);
+          if (i < uniq.length - 1) {
+            const pool = a.pool || (a.pool = []);
+            const cv = pool[i] || (pool[i] = document.createElement('canvas'));
+            const k = Math.min(1, 1920 / Math.max(a.sw, a.sh));
+            cv.width = Math.round(a.sw * k); cv.height = Math.round(a.sh * k);
+            cv.getContext('2d').drawImage(a.el, 0, 0, cv.width, cv.height);
+            a.caps.push({ key: capKey(uniq[i]), cv });
+          }
+        }
+        a.at = capKey(uniq[uniq.length - 1]);
+      } catch (e) {
+        a.caps = []; a.at = null; // do not label partial or stale pictures as the requested export/sample frame
+        if (signal && signal.aborted) throw e;
+        warnSeek(a, e);
+      }
+    }
+    trim(new Set(out.keys()));
+    return sampleCut ? vt : undefined;
+  } finally {
+    preparing--;
+    if (!sampleCut) exportUntil = performance.now() + 2000;
+  }
+}
 
 /* an exact copy made for this export frame, or null */
 M.videoCap = (a, time) => {
@@ -6053,7 +6215,13 @@ M.videoCap = (a, time) => {
   return a.at === k && a.live && a.el.readyState >= 2 ? a.el : null;      // the time the element itself was left on
 };
 /* what to draw for a clip at clip time `time`: an exact copy, the element, or null (nothing decoded yet) */
-M.videoFrame = (a, time) => {
+M.videoFrame = (a, time, cut, alt = false) => {
+  if (preparing || performance.now() < exportUntil) return M.videoCap(a, time);
+  if (a.previewNeeded) {
+    const frame = a.preview && a.preview.frames.get(cut);
+    return frame ? (alt ? frame.alt : frame.main) : null;
+  }
+  if (alt) return M.videoCap(a, time);
   const k = capKey(time);
   for (const c of a.caps || []) if (c.key === k) return c.cv;
   if (!a.live || a.el.readyState < 2) return null;
@@ -37458,6 +37626,310 @@ if (typeof document !== 'undefined') {
 })();
 
 /* ============================================================
+   my-jizura (fork) — media layer: 前景の配置編集 (Phase 3b-3)
+   · 「前景（歌詞の上）」 in the pictures panel: every picture placed over the lyrics (project.media.tracks.front, timed cuts) with
+     its time, opacity and クロマキー; 「前」 on a picture of the list puts it there for the whole song (then its time is set here).
+   · the selected one gets a frame over the preview: drag it to move, a corner to resize (keeps the picture's shape), the knob
+     above it to turn (Shift: 15° steps). Dragging updates the project and plan (no replan per move); letting go replans, cancelling restores both.
+   · スポイト: the next click on the picture in the preview takes the colour under it (from the picture itself, not the
+     frame with the lyrics) as the key colour.
+   11z_media_ui.js calls J.mediaPlace.init(api, section) and .onPlan(); its list gets a 「前景に置く」 button per picture.
+   ============================================================ */
+(() => {
+'use strict';
+const M = J.media;
+const JA = /^ja/.test(document.documentElement.lang || 'ja');
+const L = (ja, en) => (JA ? ja : en);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+const $ = id => document.getElementById(id);
+const r3 = x => Math.round(x * 1000) / 1000;
+let api = null, S = null, sel = null, spoid = false, box = null, raf = 0, drag = null, rowsKey = '', pickAbort = null;
+
+const CSS = `
+.media-front { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.media-front h3 { font: 600 12px/1.4 var(--sans, inherit); margin: 0 0 6px; color: var(--text); }
+.media-front .hint { font-size: 11px; color: var(--muted, #8e8a94); margin: 0 0 6px; }
+.mf-row { border: 1px solid var(--line); border-radius: var(--r, 4px); padding: 6px; margin-bottom: 6px; display: grid; gap: 4px; cursor: pointer; }
+.mf-row.sel { border-color: var(--cyan, #3cc8e6); box-shadow: 0 0 0 1px var(--cyan, #3cc8e6) inset; }
+.mf-row .top { display: flex; gap: 6px; align-items: center; }
+.mf-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.mf-row .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; }
+.mf-row label { font-size: 11px; display: grid; gap: 2px; }
+.mf-row input[type=number] { width: 100%; }
+.mf-row .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; border: 1px solid var(--line); }
+.media-box { position: absolute; border: 1px dashed #3cc8e6; box-shadow: 0 0 0 1px rgba(0,0,0,0.5); cursor: move; touch-action: none; z-index: 5; }
+.media-box.off { border-color: rgba(60,200,230,0.45); }
+.media-box i { position: absolute; width: 10px; height: 10px; background: #3cc8e6; border: 1px solid #000; }
+.media-box i.nw { left: -6px; top: -6px; cursor: nwse-resize; } .media-box i.ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.media-box i.sw { left: -6px; bottom: -6px; cursor: nesw-resize; } .media-box i.se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.media-box i.rot { left: calc(50% - 6px); top: -28px; border-radius: 50%; cursor: grab; }
+.media-box i.rot::after { content: ''; position: absolute; left: 4px; top: 10px; width: 1px; height: 16px; background: #3cc8e6; }
+.viewport.media-spoid, .viewport.media-spoid canvas { cursor: crosshair; }
+`;
+
+const media = () => S.project.media;
+const front = () => media().tracks.front;
+const cutById = id => front().cuts.find(c => c.id === id) || null;
+const planCut = id => (S.plan && S.plan.media && S.plan.media.front.cuts.find(c => c.id === id)) || null;
+// the width a picture without a place of its own shows at (as the frame shows it whole) — the start of a drag
+function wholeWidth(c, meta) {
+  const P = S.plan, k = c.fit === 'cover' ? Math.max(P.W / meta.w, P.H / meta.h) : Math.min(P.W / meta.w, P.H / meta.h);
+  return meta.w * k / P.W;
+}
+const rectOf = (c, meta) => c.rect || { x: 0, y: 0, w: r3(wholeWidth(c, meta)), rot: 0 };
+function commit(msg) { S.project.media = M.normalize(media()); api.replan(); if (msg) api.toast(msg); }
+
+/* ---------- 前景に置く ---------- */
+function place(assetId) {
+  const m = media(), meta = M.assetById(S.project, assetId);
+  if (!meta) return null;
+  const used = new Set([...m.tracks.back.cuts, ...m.tracks.front.cuts].map(c => c.id));
+  let k = 1; while (used.has('f' + k)) k++;
+  // the whole song to begin with (it shows right away, wherever the playhead is); its time is set in the list
+  const c = { id: 'f' + k, assetId, lineRef: null, start: 0, end: null, fit: 'auto',
+    enter: 'auto', hold: 'auto', exit: 'auto', opacity: 1, rect: { x: 0, y: 0, w: 0.4, rot: 0 } };
+  m.tracks.front.cuts.push(c);
+  commit(L(`「${meta.name}」を前景に置きました。プレビューの枠で動かせます`, `"${meta.name}" is over the lyrics now — move it with the frame on the preview`));
+  select(c.id);
+  return c.id;
+}
+
+/* ---------- the list ---------- */
+// the values of the rows that are already there (a field being typed into or dragged keeps what it shows)
+function syncValues(wrap, cs) {
+  for (const c of cs) {
+    const row = wrap.querySelector(`.mf-row[data-id="${c.id}"]`); if (!row) continue;
+    const set = (sel2, v) => { const el = row.querySelector(sel2); if (el && el !== document.activeElement && el.value !== String(v)) el.value = String(v); };
+    set('.st', c.start); set('.en', c.end == null ? '' : c.end); set('.op', c.opacity);
+    if (c.chroma) { set('.tol', c.chroma.tol); set('.spill', c.chroma.spill); }
+  }
+}
+function rows() {
+  const wrap = $('mediaFront'); if (!wrap) return;
+  const m = media(), cs = m.tracks.front.cuts.filter(c => !c.lineRef);
+  // rebuilt only when what the rows are changes (an edit in a row only updates the values: the next field keeps its focus)
+  const key = JSON.stringify([cs.map(c => [c.id, c.assetId, c.chroma ? c.chroma.color : 0]), sel, m.assets.map(a => a.id + (J.mediaAssets.has(a.id) ? '+' : '-'))]);
+  if (key === rowsKey) { syncValues(wrap, cs); return; }
+  rowsKey = key;
+  const list = wrap.querySelector('.mf-list');
+  wrap.querySelector('.hint').hidden = !!cs.length;
+  list.innerHTML = '';
+  for (const c of cs) {
+    const meta = M.assetById(S.project, c.assetId) || { name: '?' }, K = c.chroma;
+    const col = K ? M.keyColor(J.mediaAssets.get(c.assetId) || {}, K) : null;
+    const row = document.createElement('div');
+    row.className = 'mf-row' + (c.id === sel ? ' sel' : ''); row.dataset.id = c.id;
+    row.innerHTML = `<div class="top"><span class="nm" title="${esc(meta.name)}">${meta.type === 'video' ? '▶ ' : ''}${esc(meta.name)}</span>
+      <button class="ghost small fit" title="${L('画面の中央・元の大きさに戻します', 'Back to the middle, at its own size')}">${L('中央に戻す', 'Reset')}</button>
+      <button class="ghost small del" title="${L('前景から外す', 'Remove from over the lyrics')}" aria-label="${L(`${meta.name} を前景から外す`, `Remove ${meta.name} from over the lyrics`)}">✕</button></div>
+      <div class="grid">
+        <label>${L('開始（秒）', 'From (s)')}<input type="number" class="st" min="0" step="0.1" value="${c.start}"></label>
+        <label>${L('終了（秒・空＝最後まで）', 'To (s, empty = the end)')}<input type="number" class="en" min="0" step="0.1" value="${c.end == null ? '' : c.end}"></label>
+        <label>${L('不透明度', 'Opacity')} <input type="range" class="op" min="0" max="1" step="0.05" value="${c.opacity}"></label>
+        <label>${L('クロマキー', 'Chroma key')}<select class="key"><option value="">${L('なし', 'Off')}</option><option value="auto">${L('自動（ふちの色）', 'Auto (edge colour)')}</option>${K && K.color !== 'auto' ? `<option value="${esc(K.color)}">${esc(K.color)}</option>` : ''}<option value="spoid">${L('スポイトで選ぶ…', 'Pick with the eyedropper…')}</option></select></label>
+        ${K ? `<label>${L('抜く範囲', 'Tolerance')} <span class="sw" style="background:${esc(col)}"></span><input type="range" class="tol" min="0" max="0.4" step="0.01" value="${K.tol}"></label>
+        <label>${L('緑のふちを消す', 'Spill')}<input type="range" class="spill" min="0" max="1" step="0.05" value="${K.spill}"></label>` : ''}
+      </div>`;
+    const sk = row.querySelector('.key'); sk.value = K ? K.color : '';
+    row.addEventListener('click', e => { if (!e.target.closest('input,select,button')) select(c.id === sel ? null : c.id); });
+    row.querySelector('.del').addEventListener('click', () => { front().cuts = front().cuts.filter(x => x.id !== c.id); if (sel === c.id) select(null); commit(L('前景から外しました', 'Removed')); });
+    row.querySelector('.fit').addEventListener('click', () => { const x = cutById(c.id); x.rect = { x: 0, y: 0, w: 0.4, rot: 0 }; select(c.id); commit(); });
+    row.querySelector('.st').addEventListener('change', e => { const x = cutById(c.id), v = Math.max(0, +e.target.value || 0); x.start = v; if (x.end != null && x.end <= v) x.end = null; commit(); });
+    row.querySelector('.en').addEventListener('change', e => { const x = cutById(c.id), v = e.target.value === '' ? null : +e.target.value; x.end = v != null && v > x.start ? v : null; commit(); });
+    row.querySelector('.op').addEventListener('change', e => { cutById(c.id).opacity = J.clamp(+e.target.value, 0, 1); commit(); });
+    sk.addEventListener('change', e => {
+      const x = cutById(c.id), v = e.target.value;
+      if (v === 'spoid') { select(c.id); startSpoid(); e.target.value = K ? K.color : ''; return; }
+      stopSpoid();
+      if (!v) delete x.chroma; else x.chroma = Object.assign({ tol: 0.1, soft: 0.08, spill: 0.6 }, x.chroma, { color: v });
+      commit();
+    });
+    const tol = row.querySelector('.tol'), spill = row.querySelector('.spill');
+    if (tol) tol.addEventListener('change', e => { cutById(c.id).chroma.tol = +e.target.value; commit(); });
+    if (spill) spill.addEventListener('change', e => { cutById(c.id).chroma.spill = +e.target.value; commit(); });
+    list.appendChild(row);
+  }
+}
+
+/* ---------- the frame over the preview ---------- */
+function geometry(c) {
+  const meta = M.assetById(S.project, c.assetId), cv = $('view'), vp = $('viewport');
+  if (!meta || !cv || !vp) return null;
+  const cr = cv.getBoundingClientRect(), vr = vp.getBoundingClientRect(), P = S.plan, k = cr.width / P.W, R = rectOf(c, meta);
+  const w = R.w * P.W * k, h = w * meta.h / meta.w;
+  // centre in client pixels (for dragging) and in the viewport (for the frame)
+  const cx = cr.left + (P.W / 2 + R.x * P.W) * k, cy = cr.top + (P.H / 2 + R.y * P.H) * k;
+  return { meta, R, k, w, h, cx, cy, ox: vr.left, oy: vr.top, cr };
+}
+function layout() {
+  raf = 0;
+  const c = sel && cutById(sel);
+  if (!c || !box) { if (box) box.hidden = true; return; }
+  const g = geometry(c);
+  if (!g) { box.hidden = true; return; }
+  box.hidden = false;
+  Object.assign(box.style, { left: (g.cx - g.ox - g.w / 2) + 'px', top: (g.cy - g.oy - g.h / 2) + 'px', width: g.w + 'px', height: g.h + 'px', transform: `rotate(${g.R.rot}deg)` });
+  box.classList.toggle('off', !(c.start <= S.t && (c.end == null || S.t < c.end)));
+  raf = requestAnimationFrame(layout);                 // follows the playhead and the window while one is selected
+}
+function select(id) {
+  if (id !== sel) stopSpoid();
+  sel = id; rowsKey = '';
+  if (box) box.hidden = !id;
+  if (id && !raf) raf = requestAnimationFrame(layout);
+  rows();
+}
+// a change while dragging: the project's copy and the plan's copy (drawn right away, no replan)
+function setRect(c, R) {
+  c.rect = { x: r3(J.clamp(R.x, -1, 1)), y: r3(J.clamp(R.y, -1, 1)), w: r3(J.clamp(R.w, 0.02, 4)), rot: Math.round(((R.rot + 540) % 360) - 180) };
+  const pc = planCut(c.id); if (pc) pc.rect = Object.assign({}, c.rect);
+  S.need = true;
+}
+function onDown(e) {
+  if (spoid) return;                          // picking a colour must not also start a placement drag
+  const c = sel && cutById(sel); if (!c || e.button !== 0) return;
+  const g = geometry(c); if (!g) return;
+  e.preventDefault(); e.stopPropagation();
+  const kind = e.target.classList.contains('rot') ? 'rot' : e.target.tagName === 'I' ? 'size' : 'move';
+  drag = { kind, c, g, R0: Object.assign({}, g.R), orig: c.rect ? Object.assign({}, c.rect) : null,
+    x0: e.clientX, y0: e.clientY, d0: Math.max(4, Math.hypot(e.clientX - g.cx, e.clientY - g.cy)) };
+  box.setPointerCapture(e.pointerId);
+}
+function onMove(e) {
+  if (!drag) return;
+  const { kind, c, g, R0 } = drag, P = S.plan, R = Object.assign({}, R0);
+  if (kind === 'move') { R.x = R0.x + (e.clientX - drag.x0) / g.k / P.W; R.y = R0.y + (e.clientY - drag.y0) / g.k / P.H; }
+  else if (kind === 'size') R.w = R0.w * Math.hypot(e.clientX - g.cx, e.clientY - g.cy) / drag.d0;
+  else {
+    let a = Math.atan2(e.clientY - g.cy, e.clientX - g.cx) * 180 / Math.PI + 90;
+    if (e.shiftKey) a = Math.round(a / 15) * 15;
+    R.rot = a;
+  }
+  setRect(c, R);
+}
+function onUp() { if (!drag) return; drag = null; commit(); }
+// an interrupted drag (pointercancel: a touch taken over by the system, Esc) puts it back where it was — nothing is kept
+function onCancel() {
+  if (!drag) return;
+  const { c, orig } = drag; drag = null;
+  if (orig) c.rect = orig; else delete c.rect;
+  const pc = planCut(c.id); if (pc) pc.rect = orig ? Object.assign({}, orig) : null;
+  S.need = true;
+  J.uiApi.flushSave();                       // an autosave may already have kept the intermediate rect
+}
+
+/* ---------- スポイト ---------- */
+function startSpoid() {
+  stopSpoid(); spoid = true; $('viewport').classList.add('media-spoid');
+  api.toast(L('プレビューで、抜きたい色（前景の画像の上）をクリックしてください（Esc でやめる）', 'Click the colour to take out, on the picture in the preview (Esc to cancel)'));
+}
+function stopSpoid() {
+  spoid = false; if (pickAbort) { pickAbort.abort(); pickAbort = null; }
+  const vp = $('viewport'); if (vp) vp.classList.remove('media-spoid');
+}
+/* the colour of the picture itself under a point of the preview, or null outside it — through where it is drawn at this moment
+   (its motion and 登場・退場 included: M.cutBox, as the renderer), or where it is placed when it is not on screen now */
+M.pickColor = async (c, clientX, clientY, signal) => {
+  const g = geometry(c); if (!g) return null;
+  const a = J.mediaAssets.get(c.assetId); if (!a) return null;
+  const P = S.plan, pc = planCut(c.id), t0 = S.t;
+  let cx = g.cx, cy = g.cy, w = g.w, h = g.h, turn = g.R.rot * Math.PI / 180;
+  if (pc && M.cutBox && pc.start <= t0 && t0 < pc.end) {
+    const B = M.cutBox(P, pc, t0, P.W, P.H, M.layerFx(pc, t0), g.meta.w, g.meta.h);
+    if (B.clip) {
+      const x = (clientX - g.cr.left) / g.k, y = (clientY - g.cr.top) / g.k, q = B.clip;
+      if (x < q.x || x > q.x + q.w || y < q.y || y > q.y + q.h) return null;
+    }
+    cx = g.cr.left + (B.x0 + B.dw / 2) * g.k; cy = g.cr.top + (B.y0 + B.dh / 2) * g.k; w = B.dw * g.k; h = B.dh * g.k; turn = B.turn;
+  }
+  const t = -turn, dx = clientX - cx, dy = clientY - cy;
+  const u = (dx * Math.cos(t) - dy * Math.sin(t)) / w + 0.5, v = (dx * Math.sin(t) + dy * Math.cos(t)) / h + 0.5;
+  if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+  const sample = (src, alt, blend) => {
+    if (!src) return null;
+    const cv = document.createElement('canvas'); cv.width = cv.height = 1;
+    const x = cv.getContext('2d', { willReadFrequently: true });
+    const paint = (frame, alpha) => {
+      const sw = frame.videoWidth || frame.width, sh = frame.videoHeight || frame.height;
+      x.globalAlpha = alpha;
+      x.drawImage(frame, Math.min(sw - 1, Math.floor(u * sw)), Math.min(sh - 1, Math.floor(v * sh)), 1, 1, 0, 0, 1, 1);
+    };
+    paint(src, 1); if (alt && blend > 0) paint(alt, blend); // the same source-over blend as drawCut's loop seam
+    const d = x.getImageData(0, 0, 1, 1).data;
+    return '#' + [d[0], d[1], d[2]].map(n => n.toString(16).padStart(2, '0')).join('');
+  };
+  if (a.type !== 'video' || !pc || !M.videoTimes(P, pc, t0)) return sample(a.type === 'video' ? a.thumb : a.source);
+  // Hold the clicked song time, read this cut's frames (also outside its interval), then return them to the preview.
+  J.uiApi.pause();
+  if (signal && signal.aborted) return null;
+  try {
+    const vt = await M.prepareCut(P, pc, t0, signal);
+    if (!vt || (signal && signal.aborted)) return null;
+    const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
+    if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
+    return sample(src, alt, vt.k);
+  } finally { M.releaseVideos(); S.need = true; }
+};
+async function onViewClick(e) {
+  if (!spoid) return;
+  e.preventDefault(); e.stopPropagation();
+  const c = sel && cutById(sel), plan = S.plan;
+  if (pickAbort) pickAbort.abort();
+  const request = new AbortController(); pickAbort = request;
+  try {
+    const col = c && await M.pickColor(c, e.clientX, e.clientY, request.signal);
+    if (request.signal.aborted || !spoid || !c || cutById(sel) !== c || S.plan !== plan) return;
+    if (!col) { api.toast(L('前景の画像の上をクリックしてください', 'Click on the picture over the lyrics')); return; }
+    stopSpoid();
+    c.chroma = Object.assign({ tol: 0.1, soft: 0.08, spill: 0.6 }, c.chroma, { color: col });
+    commit(L(`${col} を抜きます`, `Taking ${col} out`));
+  } catch (err) {
+    if (!request.signal.aborted) api.toast(L('このフレームの色を読み取れませんでした。もう一度お試しください', 'Could not read this frame. Please try again.'));
+  } finally { if (pickAbort === request) pickAbort = null; }
+}
+
+J.mediaPlace = {
+  init(a, sec) {
+    api = a; S = a.S;
+    if (!$('mediaPlaceCss')) { const st = document.createElement('style'); st.id = 'mediaPlaceCss'; st.textContent = CSS; document.head.appendChild(st); }
+    const ctl = $('mediaCtl');
+    if (ctl && !$('mediaFront')) {
+      const wrap = document.createElement('div');
+      wrap.id = 'mediaFront'; wrap.className = 'media-front';
+      wrap.innerHTML = `<h3>${L('前景（歌詞の上）', 'Over the lyrics')}</h3>
+        <p class="hint">${L('一覧の画像の「前」で、歌詞の上に重ねます（ロゴ・立ち絵・グリーンバックの動画など）。出す時間はここで変えられます。', 'Put a picture over the lyrics with 「前」 on it in the list (a logo, a character, a green-screen clip); set its time here.')}</p>
+        <div class="mf-list"></div>`;
+      ctl.appendChild(wrap);
+    }
+    const vp = $('viewport');
+    if (vp && !box) {
+      box = document.createElement('div');
+      box.className = 'media-box'; box.id = 'mediaBox'; box.hidden = true;
+      box.innerHTML = '<i class="nw"></i><i class="ne"></i><i class="sw"></i><i class="se"></i><i class="rot" title="' + L('回す（Shift で 15° ずつ）', 'Turn (Shift: 15° steps)') + '"></i>';
+      vp.appendChild(box);
+      box.addEventListener('pointerdown', onDown);
+      box.addEventListener('pointermove', onMove);
+      box.addEventListener('pointerup', onUp);
+      box.addEventListener('pointercancel', onCancel);
+      vp.addEventListener('click', onViewClick, true);
+      document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (drag) onCancel(); else if (spoid) stopSpoid(); });
+    }
+    rows();
+  },
+  onPlan() {
+    if (!api) return;
+    if (sel && !cutById(sel)) select(null);
+    rows();
+  },
+  // for 11z_media_ui.js (the 「前」 button) and tools / tests
+  place: id => place(id),
+  select: id => select(id),
+  selected: () => sel,
+  spoid: () => startSpoid(),
+};
+})();
+
+/* ============================================================
    my-jizura (fork) — media layer: editor UI (Phase 1: background pictures, Phase 2: video clips,
    Phase 3: 登場・つなぎ・動き・加工・暗幕 and メディアのおまかせ)
    · a 「画像・動画」 section above 「行とカット」 (built here, so app/body.html stays as upstream ships it)
@@ -37623,9 +38095,11 @@ function renderList() {
     const li = document.createElement('li'); li.className = a ? '' : 'missing';
     li.title = a ? `${meta.name}（${meta.w}×${meta.h}）` : L(`${meta.name}：このブラウザにデータがありません。もう一度追加してください`, `${meta.name}: not in this browser. Add it again.`);
     li.innerHTML = `<canvas width="160" height="90"></canvas><span class="no">${i + 1}</span>${meta.type === 'video' ? `<span class="dur">▶ ${(+meta.duration || 0).toFixed(1)}s</span>` : ''}<span class="nm">${esc(meta.name)}</span>
-      <span class="acts"><button class="up" title="${L('前へ', 'Earlier')}" aria-label="${L('前へ', 'Earlier')}">←</button><button class="del" title="${L('外す', 'Remove')}" aria-label="${L(`${meta.name} を外す`, `Remove ${meta.name}`)}">✕</button></span>`;
+      <span class="acts"><button class="fr" title="${L('歌詞の上（前景）に重ねる', 'Put it over the lyrics')}" aria-label="${L(`${meta.name} を前景に置く`, `Put ${meta.name} over the lyrics`)}">${L('前', 'Over')}</button><button class="up" title="${L('前へ', 'Earlier')}" aria-label="${L('前へ', 'Earlier')}">←</button><button class="del" title="${L('外す', 'Remove')}" aria-label="${L(`${meta.name} を外す`, `Remove ${meta.name}`)}">✕</button></span>`;
     thumb(li.querySelector('canvas'), a);
     li.querySelector('.del').addEventListener('click', () => removeAsset(meta.id));
+    li.querySelector('.fr').addEventListener('click', () => { if (J.mediaPlace) J.mediaPlace.place(meta.id); });
+    li.querySelector('.fr').disabled = !a;
     li.querySelector('.up').addEventListener('click', () => moveAsset(meta.id, -1));
     li.querySelector('.up').disabled = i === 0;
     ul.appendChild(li);
@@ -37703,6 +38177,7 @@ J.mediaUI = {
     const sec = section();
     anchor.parentNode.insertBefore(sec, anchor);
     bind(sec);
+    if (J.mediaPlace) J.mediaPlace.init(a, sec);                     // 前景の配置編集 (11z_media_place.js)
     // the sound of a video file can be the song (decodeAudioData reads the audio track of MP4 / WebM)
     const au = $('audioFile'); if (au && !/video/.test(au.accept)) au.accept += ',video/mp4,video/webm,.mp4,.m4v,.webm,.mov';
     lastProject = S.project; syncControls(); restore();
@@ -37721,6 +38196,7 @@ J.mediaUI = {
     if (held.length) { for (const k of held) M.unlockLine(S.project, k); api.replan(); return; }
     if (S.project !== lastProject) { lastProject = S.project; listKey = ''; note(''); restore(); }   // another project was opened / reset
     syncControls(); renderList();
+    if (J.mediaPlace) J.mediaPlace.onPlan();
   },
   /* the picture selector of one lyric line (only when the project has pictures) */
   lineRow(li, ln, i) {
@@ -37749,8 +38225,15 @@ J.mediaUI = {
   // for tools/jizura_driver.py (the CLI / MCP server): the same steps as choosing files / ✕ in the panel
   addFiles: fileList => addFiles(fileList),
   remove: id => removeAsset(id),
-  /* the pictures as a thin strip along the bottom of the cut band */
+  /* the pictures as a thin strip along the bottom of the cut band (the ones over the lyrics: thin lines along its top) */
   drawLane(x, X, w, top, bot, dpr) {
+    const F = S && S.plan && S.plan.media && S.plan.media.front;
+    if (F && F.cuts.length) F.cuts.forEach((c, i) => {
+      const x0 = X(c.start), x1 = X(c.end);
+      if (x1 < 0 || x0 > w) return;
+      x.fillStyle = `hsla(${J.sid(c.assetId) % 360},65%,60%,0.9)`;
+      x.fillRect(x0, top + (1 + (i % 3) * 3) * dpr, Math.max(1, x1 - x0 - 1), 2 * dpr);
+    });
     const P = S && S.plan && S.plan.media && S.plan.media.back;
     if (!P || !P.cuts.length) return;
     const y = bot - 5 * dpr, hh = 4 * dpr;
@@ -38320,6 +38803,7 @@ function pause() {
   $('btnPlay').textContent = '▶'; $('btnPlay').setAttribute('aria-label', 'Putar'); S.need = true;
 }
 function seek(t) {
+  if (J.media && J.media.cancelPreview) J.media.cancelPreview();   // my-jizura: discard pending pictures from the old playhead
   S.t = J.clamp(t, 0, Math.max(0, S.plan.duration - 1e-3));
   if (S.audio) { if (S.playing) AP.play(S.audio.buffer, S.t, playRate()); }
   else S.t0 = performance.now() - S.t * 1000 / playRate();

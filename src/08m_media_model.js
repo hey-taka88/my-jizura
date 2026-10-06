@@ -26,7 +26,7 @@ M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.
 M.AUTO = ['off', 'perLine'];
 M.ORDER = ['sequential', 'random'];
 // how a video clip shorter than its cut fills it (AI clips are 5–10 s, a cut can be a whole verse):
-//   loop: from the start again (with a short cross-fade at the seam when exporting) · pingpong: forwards, then backwards ·
+//   loop: from the start again (with a short cross-fade at the seam in preview and export) · pingpong: forwards, then backwards ·
 //   hold: stop on the last frame · beat: back to the start on every bar (N beats) of the song, looping inside a long bar
 M.EXTEND = ['loop', 'pingpong', 'hold', 'beat'];
 M.RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -61,13 +61,13 @@ function asset(a) {
   if (a.type === 'video') o.duration = num(a.duration, 0, 86400, 0);
   return o;
 }
-function cut(c, i) {
+function cut(c) {
   if (!isObj(c)) return null;
   const lineRef = isObj(c.lineRef) && Number.isInteger(+c.lineRef.line) && +c.lineRef.line >= 0 ? { line: Math.min(+c.lineRef.line, 99999) } : null;
   const start = c.start == null ? null : num(c.start, 0, 86400, null);
   if (!lineRef && start == null) return null;                       // a cut is tied to a lyric line or to a time
   const o = {
-    id: M.ID.test(c.id) ? c.id : 'c' + i,
+    id: typeof c.id === 'string' && M.ID.test(c.id) ? c.id : null,
     assetId: c.assetId === '' ? '' : (M.ID.test(c.assetId) ? c.assetId : ''),   // '' = no image here
     lineRef, start, end: c.end == null ? null : num(c.end, 0, 86400, null),
     fit: pick(c.fit, M.FIT.concat(['auto']), 'auto'),
@@ -102,7 +102,7 @@ function join(v, d) { return v === 'auto' || M.JOIN.includes(v) || M.TRANS_KEYS.
 function track(t, d) {
   t = isObj(t) ? t : {};
   return {
-    cuts: (Array.isArray(t.cuts) ? t.cuts : []).slice(0, M.MAX_CUTS).map((c, i) => cut(c, i)).filter(Boolean),
+    cuts: (Array.isArray(t.cuts) ? t.cuts : []).slice(0, M.MAX_CUTS).map(cut).filter(Boolean),
     opacity: num(t.opacity, 0, 1, d.opacity), blend: pick(t.blend, M.BLEND, d.blend), dim: num(t.dim, 0, 0.9, d.dim),
   };
 }
@@ -127,7 +127,17 @@ M.normalize = m => {
     text: M.normalizeText ? M.normalizeText(m.text) : d.text };
   for (const k of M.TRACKS) { out.tracks[k] = track(tr[k], d.tracks[k]); out.autoFill[k] = auto(af[k], d.autoFill[k]); }
   // a cut may only point at an asset of this project ('' = deliberately none); cuts of a picture that is gone are dropped
-  for (const k of M.TRACKS) out.tracks[k].cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
+  for (const k of M.TRACKS) {
+    const cuts = out.tracks[k].cuts.filter(c => !c.assetId || seen.has(c.assetId));
+    // Placement editing addresses cuts by ID. Keep existing unique IDs, including ones later in the list.
+    const reserved = new Set(cuts.map(c => c.id).filter(Boolean)), used = new Set();
+    let nextId = 0;
+    for (const c of cuts) {
+      if (!c.id || used.has(c.id)) { let id; do { id = 'c' + nextId++; } while (reserved.has(id)); c.id = id; reserved.add(id); }
+      used.add(c.id);
+    }
+    out.tracks[k].cuts = cuts;
+  }
   return out;
 };
 

@@ -302,6 +302,7 @@ function pause() {
   $('btnPlay').textContent = '▶'; $('btnPlay').setAttribute('aria-label', '再生'); S.need = true;
 }
 function seek(t) {
+  if (J.media && J.media.cancelPreview) J.media.cancelPreview();   // my-jizura: discard pending pictures from the old playhead
   S.t = J.clamp(t, 0, Math.max(0, S.plan.duration - 1e-3));
   if (S.audio) { if (S.playing) AP.play(S.audio.buffer, S.t, playRate()); }
   else S.t0 = performance.now() - S.t * 1000 / playRate();

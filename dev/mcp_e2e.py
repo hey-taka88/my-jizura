@@ -166,8 +166,8 @@ async def main():
             r = await call('add_timed_media', {'media': '01.png', 'start': 2, 'end': 6, 'track': 'front', 'x': 0.3, 'y': -0.3, 'size': 0.2, 'rot': 10, 'key': 'auto', 'key_tol': 0.15})
             p6f = await call('get_plan')
             ok(r['id'].startswith('f') and p6f['timed'][0]['track'] == 'front' and p6f['timed'][0]['size'] == 0.2 and p6f['timed'][0]['key'].startswith('auto (#') and p6f['timed'][0]['keyTol'] == 0.15 and p6f['front'] == [{'media': '01.png', 'start': 2, 'end': 6, 'placed': True}]
-               and [(c['media'], c['start'], c['end']) for c in p6f['cuts']] == bg0,
-               f"add_timed_media(track='front'): over the lyrics, placed by hand, the background is not touched {p6f['front']}")
+               and [(c['start'], c['end']) for c in p6f['cuts']] == [(c[1], c[2]) for c in bg0] and all(c['media'] != '01.png' for c in p6f['cuts']),
+               f"add_timed_media(track='front'): over the lyrics, placed by hand; it leaves the automatic backgrounds {p6f['front']} {[c['media'] for c in p6f['cuts']]}")
             await call('remove_timed_media', {'id': r['id']})
             print('lyric lines set by hand')
             import hashlib
