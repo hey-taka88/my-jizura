@@ -106,6 +106,9 @@ async def main():
             'timed pictures only (no automatic ones)': dict(PICS, autoFill={'back': {'mode': 'off'}}, tracks={'back': {'cuts': [{'id': 't1', 'assetId': B, 'start': 14, 'end': 30}]}}),
             'a line set to 「なし」 inside a timed picture': dict(PICS, tracks={'back': {'cuts': [{'id': 't1', 'assetId': A, 'start': 0, 'end': None},
                 {'id': 'l3', 'assetId': '', 'lineRef': {'line': 3}}]}}),
+            'two choices for one line in a file (the last one counts)': dict(PICS, tracks={'back': {'cuts': [
+                {'id': 'l2a', 'assetId': '', 'lineRef': {'line': 2}}, {'id': 'l2b', 'assetId': A, 'lineRef': {'line': 2}},
+                {'id': 'l4a', 'assetId': B, 'lineRef': {'line': 4}}, {'id': 'l4b', 'assetId': '', 'lineRef': {'line': 4}}]}}),
             'every picture is placed over the lyrics': dict(PICS, tracks={'front': {'cuts': [{'id': 'f1', 'assetId': A, 'start': 0, 'end': None, 'rect': {'x': 0, 'y': 0, 'w': 0.3, 'rot': 0}},
                 {'id': 'f2', 'assetId': B, 'start': 0, 'end': None, 'rect': {'x': 0.3, 'y': 0, 'w': 0.3, 'rot': 0}}]}}),
         }

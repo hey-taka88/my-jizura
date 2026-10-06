@@ -200,7 +200,7 @@ M.backUnder = (project, li, t0, t1) => {
   const m = project && project.media;
   if (!m || !m.assets || !m.assets.length || !m.tracks || !m.tracks.back || (J.keyMode && J.keyMode(project))) return false;
   const known = new Set(m.assets.map(a => a.id)), cuts = m.tracks.back.cuts || [];
-  const own = cuts.find(c => c.lineRef && c.lineRef.line === li);
+  let own = null; for (const c of cuts) if (c.lineRef && c.lineRef.line === li) own = c;   // the last one, as resolveTrack's byLine
   if (own) return !!own.assetId && known.has(own.assetId);                          // 「なし」 = nothing under this line
   // placed at a time: a picture there counts; any placed cut (also 「なし」) takes its span from the automatic pictures
   const spans = timedSpans(cuts.filter(c => !c.lineRef), Infinity, false).filter(x => x.s < t1 && x.e > t0);
