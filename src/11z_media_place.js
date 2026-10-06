@@ -17,7 +17,6 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&
 const $ = id => document.getElementById(id);
 const r3 = x => Math.round(x * 1000) / 1000;
 let api = null, S = null, sel = null, spoid = false, box = null, raf = 0, drag = null, rowsKey = '', pickAbort = null;
-let pickFrames = Promise.resolve();
 
 const CSS = `
 .media-front { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -236,17 +235,12 @@ M.pickColor = async (c, clientX, clientY, signal) => {
   if (!vt) return sample(a.type === 'video' ? a.thumb : a.source);
   // Hold the song at the clicked time and reuse the existing decoders/export captures, including both sides of a loop seam.
   J.uiApi.pause();
-  const read = pickFrames.then(async () => {
-    if (signal && signal.aborted) return null;
-    await M.prepareFrame(P, t0, signal);
-    if (signal && signal.aborted) return null;
-    const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
-    if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
-    return sample(src, alt, vt.k);
-  });
-  pickFrames = read.catch(() => {}); // cancelled/failed reads must not block the next request
-  return read;
-
+  if (signal && signal.aborted) return null;
+  await M.prepareFrame(P, t0, signal, pc);
+  if (signal && signal.aborted) return null;
+  const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
+  if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
+  return sample(src, alt, vt.k);
 };
 async function onViewClick(e) {
   if (!spoid) return;

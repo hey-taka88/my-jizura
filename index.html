@@ -5915,10 +5915,11 @@ const MAX_LIVE = 3;
 const VIDEO_EXT = /\.(mp4|m4v|webm|mov|ogv)$/i;
 M.isVideoFile = f => !!f && (/^video\//.test(f.type || '') || VIDEO_EXT.test(f.name || ''));
 
-const once = (el, ev, ms, signal) => new Promise((res, rej) => {
+const once = (el, ev, ms, signal, ready) => new Promise((res, rej) => {
+  if (signal && signal.aborted) { rej(new Error('aborted')); return; }
   let timer = 0;
   const done = (ok, e) => { clearTimeout(timer); el.removeEventListener(ev, onEv); el.removeEventListener('error', onErr); if (signal) signal.removeEventListener('abort', onAbort); ok ? res() : rej(e); };
-  const onEv = () => done(true), onErr = () => done(false, new Error('video error ' + (el.error ? el.error.code : ''))), onAbort = () => done(false, new Error('aborted'));
+  const onEv = () => { if (!ready || ready()) done(true); }, onErr = () => done(false, new Error('video error ' + (el.error ? el.error.code : ''))), onAbort = () => done(false, new Error('aborted'));
   el.addEventListener(ev, onEv); el.addEventListener('error', onErr);
   if (signal) signal.addEventListener('abort', onAbort);
   timer = setTimeout(() => done(false, new Error('timeout ' + ev)), ms);
@@ -5961,10 +5962,10 @@ function live(a) {
   a.el.src = a.url; a.live = true;
   try { a.el.load(); } catch (e) {}
 }
-function trim(keep) {
+function trim(keep, limit = MAX_LIVE) {
   const vids = [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live && !keep.has(a.id)).sort((p, q) => p.lastUse - q.lastUse);
   let n = [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live).length;
-  for (const a of vids) { if (n <= MAX_LIVE) break; try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {} a.live = false; n--; }
+  for (const a of vids) { if (n <= limit) break; try { a.el.pause(); a.el.removeAttribute('src'); a.el.load(); } catch (e) {} a.live = false; n--; }
 }
 M.liveVideos = () => [...J.mediaAssets.values()].filter(a => a.type === 'video' && a.live).length;
 
@@ -5986,9 +5987,10 @@ function needed(plan, t) {
 }
 
 /* preview: follow the song with as few seeks as possible */
+let sampling = 0;
 let exportUntil = 0;                          // an export owns the clips while it runs (the preview must not seek them)
 M.syncPreview = (plan, t, playing, redraw) => {
-  if (!plan || !plan.media || performance.now() < exportUntil) return;
+  if (!plan || !plan.media || sampling || performance.now() < exportUntil) return;
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && (a.at != null || (a.caps && a.caps.length))) { a.at = null; a.caps = []; }   // export copies are stale now
   const { out, next } = needed(plan, t);
   for (const [id, uses] of out) {
@@ -6024,48 +6026,65 @@ M.pauseVideos = () => { for (const a of J.mediaAssets.values()) if (a.type === '
 /* export: every clip needed for the frame at t is at its exact time before the frame is drawn */
 async function seekExact(el, time, signal) {
   if (el.readyState < 1) await once(el, 'loadedmetadata', 20000, signal);
+  if (signal && signal.aborted) throw new Error('aborted');
   const tt = J.clamp(time, 0, Math.max(0, el.duration - 1 / 240));
   if (!el.paused) el.pause();
   if (Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking) return;
+  // A seeked event from a previous seek may already be queued. Only the completed requested seek is readable.
+  const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 1e-4);
   el.currentTime = tt;
-  await once(el, 'seeked', 15000, signal);
+  await settled;
 }
 const capKey = time => Math.round(time * 1000);
-M.prepareFrame = async (plan, t, signal) => {
-  if (!plan || !plan.media) return;
-  exportUntil = performance.now() + 2000;
-  M.pauseVideos();
-  const { out } = needed(plan, t);
-  for (const a of J.mediaAssets.values()) if (a.type === 'video') { a.caps = []; a.at = null; }
-  for (const [id, uses] of out) {
-    const a = J.mediaAssets.get(id);
-    if (!a || a.type !== 'video') continue;
-    live(a);
-    const times = [];
-    for (const { vt } of uses) { times.push(vt.main); if (vt.alt != null) times.push(vt.alt); }
-    const uniq = [...new Set(times.map(capKey))].map(k => k / 1000);
-    try {
-      // all but the last time are copied out; the element itself stays on the last one
-      for (let i = 0; i < uniq.length; i++) {
-        await seekExact(a.el, uniq[i], signal);
-        if (i < uniq.length - 1) {
-          const pool = a.pool || (a.pool = []);
-          const cv = pool[i] || (pool[i] = document.createElement('canvas'));
-          const k = Math.min(1, 1920 / Math.max(a.sw, a.sh));
-          cv.width = Math.round(a.sw * k); cv.height = Math.round(a.sh * k);
-          cv.getContext('2d').drawImage(a.el, 0, 0, cv.width, cv.height);
-          a.caps.push({ key: capKey(uniq[i]), cv });
-        }
-      }
-      a.at = capKey(uniq[uniq.length - 1]);
-    } catch (e) {
-      if (signal && signal.aborted) throw e;
-      console.warn('media: clip seek failed', a.name, e);           // the frame is drawn without this clip's exact picture
-    }
-  }
-  trim(new Set(out.keys()));
-  exportUntil = performance.now() + 2000;
+// A shared decoder cannot seek for two frame preparations at once (export, or a user sample).
+let frameQueue = Promise.resolve();
+M.prepareFrame = (plan, t, signal, sampleCut) => {
+  const prepared = frameQueue.then(() => prepareFrame(plan, t, signal, sampleCut));
+  frameQueue = prepared.catch(() => {});
+  return prepared;
 };
+// sampleCut prepares the selected cut even outside its interval, without the export cooldown.
+async function prepareFrame(plan, t, signal, sampleCut) {
+  if (!plan || !plan.media) return;
+  if (signal && signal.aborted) throw new Error('aborted');
+  if (sampleCut) sampling++; else exportUntil = performance.now() + 2000;
+  try {
+    M.pauseVideos();
+    const vt = sampleCut && M.videoTimes(plan, sampleCut, t);
+    const out = sampleCut ? new Map(vt ? [[sampleCut.assetId, [{ c: sampleCut, vt }]]] : []) : needed(plan, t).out;
+    for (const a of J.mediaAssets.values()) if (a.type === 'video') { a.caps = []; a.at = null; }
+    for (const [id, uses] of out) {
+      const a = J.mediaAssets.get(id);
+      if (!a || a.type !== 'video') continue;
+      if (sampleCut && !a.live) trim(new Set([id]), MAX_LIVE - 1); // borrow a slot before reopening an inactive cut
+      live(a);
+      const times = [];
+      for (const { vt } of uses) { times.push(vt.main); if (vt.alt != null) times.push(vt.alt); }
+      const uniq = [...new Set(times.map(capKey))].map(k => k / 1000);
+      try {
+        // all but the last time are copied out; the element itself stays on the last one
+        for (let i = 0; i < uniq.length; i++) {
+          await seekExact(a.el, uniq[i], signal);
+          if (i < uniq.length - 1) {
+            const pool = a.pool || (a.pool = []);
+            const cv = pool[i] || (pool[i] = document.createElement('canvas'));
+            const k = Math.min(1, 1920 / Math.max(a.sw, a.sh));
+            cv.width = Math.round(a.sw * k); cv.height = Math.round(a.sh * k);
+            cv.getContext('2d').drawImage(a.el, 0, 0, cv.width, cv.height);
+            a.caps.push({ key: capKey(uniq[i]), cv });
+          }
+        }
+        a.at = capKey(uniq[uniq.length - 1]);
+      } catch (e) {
+        if (signal && signal.aborted) throw e;
+        console.warn('media: clip seek failed', a.name, e);
+      }
+    }
+    trim(new Set(out.keys()));
+  } finally {
+    if (sampleCut) sampling--; else exportUntil = performance.now() + 2000;
+  }
+}
 
 /* an exact copy made for this export frame, or null */
 M.videoCap = (a, time) => {
@@ -37497,7 +37516,6 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&
 const $ = id => document.getElementById(id);
 const r3 = x => Math.round(x * 1000) / 1000;
 let api = null, S = null, sel = null, spoid = false, box = null, raf = 0, drag = null, rowsKey = '', pickAbort = null;
-let pickFrames = Promise.resolve();
 
 const CSS = `
 .media-front { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -37716,17 +37734,12 @@ M.pickColor = async (c, clientX, clientY, signal) => {
   if (!vt) return sample(a.type === 'video' ? a.thumb : a.source);
   // Hold the song at the clicked time and reuse the existing decoders/export captures, including both sides of a loop seam.
   J.uiApi.pause();
-  const read = pickFrames.then(async () => {
-    if (signal && signal.aborted) return null;
-    await M.prepareFrame(P, t0, signal);
-    if (signal && signal.aborted) return null;
-    const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
-    if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
-    return sample(src, alt, vt.k);
-  });
-  pickFrames = read.catch(() => {}); // cancelled/failed reads must not block the next request
-  return read;
-
+  if (signal && signal.aborted) return null;
+  await M.prepareFrame(P, t0, signal, pc);
+  if (signal && signal.aborted) return null;
+  const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
+  if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
+  return sample(src, alt, vt.k);
 };
 async function onViewClick(e) {
   if (!spoid) return;

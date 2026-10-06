@@ -48,6 +48,17 @@ async def main():
         ImageDraw.Draw(im).rectangle((0, 0, 99, 299), fill=(240, 0, 0)); im.save(pic)
         async with Jizura(browser=BROWSER, log=lambda m: None) as jz:
             pg, ev = jz.page, jz.page.evaluate
+            async def box_bounds():
+                await pg.locator('#viewport').scroll_into_view_if_needed()
+                # Selection schedules layout on requestAnimationFrame; do not click the previous cut's box.
+                await pg.wait_for_function("""() => {
+                  const c=J.ui.project.media.tracks.front.cuts.find(c=>c.id===J.mediaPlace.selected());
+                  if(!c)return false;const p=c.rect||{x:0,y:0},r=document.getElementById('view').getBoundingClientRect();
+                  const b=document.getElementById('mediaBox').getBoundingClientRect();
+                  return b.width>0&&Math.abs(b.x+b.width/2-(r.x+r.width*(.5+p.x)))<2
+                    &&Math.abs(b.y+b.height/2-(r.y+r.height*(.5+p.y)))<2;
+                }""")
+                return await pg.locator('#mediaBox').bounding_box()
             await pg.set_viewport_size({'width': 1500, 'height': 950})
             await jz.new_project(lyrics=LYRICS); await jz.add_media([str(pic)])
             await jz.set_media_options(auto=False, dim=0)
@@ -112,14 +123,14 @@ async def main():
             key = pg.locator('#mediaFront .key').first
             await key.select_option('auto'); await key.select_option('spoid'); await key.select_option('')
             ok(not await ev(ARMED), 'Off cancels the eyedropper')
-            b=await pg.locator('#mediaBox').bounding_box()
+            b=await box_bounds()
             await pg.mouse.click(b['x']+b['width']*.6,b['y']+b['height']*.5)
             ok('chroma' not in (await ev(FRONT))[0], 'a later click does not re-enable the key')
             await key.select_option('spoid'); await ev('() => J.mediaPlace.select(null)')
             ok(not await ev(ARMED), 'deselecting cancels the eyedropper')
             await ev('(id) => J.mediaPlace.select(id)',cid)
             await key.select_option('spoid')
-            b=await pg.locator('#mediaBox').bounding_box(); x,y=b['x']+b['width']/2,b['y']+b['height']/2
+            b=await box_bounds(); x,y=b['x']+b['width']/2,b['y']+b['height']/2
             before=(await ev(FRONT))[0]['rect']
             await pg.mouse.move(x,y);await pg.mouse.down();await pg.mouse.move(x+30,y+15,steps=3)
             await pg.keyboard.press('Escape');await pg.mouse.up()
@@ -128,7 +139,7 @@ async def main():
                 await ev('(exists) => {const c=J.ui.project.media.tracks.front.cuts[0];if(exists)c.rect={x:0,y:0,w:.4,rot:0};else delete c.rect;J.uiApi.replan();}',existing)
                 await pg.wait_for_timeout(80)
                 before=(await ev(FRONT))[0].get('rect')
-                b=await pg.locator('#mediaBox').bounding_box();x,y=b['x']+b['width']/2,b['y']+b['height']/2
+                b=await box_bounds();x,y=b['x']+b['width']/2,b['y']+b['height']/2
                 await pg.mouse.move(x,y);await pg.mouse.down();await pg.mouse.move(x+45,y+20,steps=3)
                 await ev('() => J.uiApi.flushSave()')  # an autosave may fire while the pointer is still held
                 if cancel=='Escape': await pg.keyboard.press('Escape')
@@ -155,12 +166,18 @@ async def main():
             }""")
             ok(await ev('() => J.media.liveVideos()')==3,'fixture fills the three-video decoder budget')
             await pg.locator('#mediaFront .key').nth(1).select_option('spoid')
-            b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+            b=await box_bounds();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
             await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[1].chroma?.color")
             live_key=(await ev(FRONT))[1]['chroma']['color']
             budget=await ev('() => {document.createElement=window.origCreateElement;return {live:J.media.liveVideos(),extra:window.createdVideos};}')
             ok(budget['live']<=3 and budget['extra']==0,f'sampling uses only the existing tracked decoders {budget}')
             ok(await ev('() => !J.ui.playing && Math.abs(J.ui.t-2)<.05'),'video sampling holds the playhead at the clicked time')
+            resumed=await ev("""() => {
+              J.uiApi.seek(.5);J.media.syncPreview(J.ui.plan,.5,false);
+              const a=J.mediaAssets.get(J.ui.project.media.tracks.front.cuts[0].assetId);return a.el.currentTime;
+            }""")
+            ok(abs(resumed-.5)<.01,f'scrubbing immediately after sampling is not blocked by export ownership ({resumed})')
+            await ev('() => J.uiApi.seek(2)')
             await ev("() => {delete J.ui.project.media.tracks.front.cuts[1].chroma;J.uiApi.replan();}")
             r=await ev("""async () => {
               const S=J.ui;await J.media.prepareFrame(S.plan,2);
@@ -178,7 +195,7 @@ async def main():
             expected_live='#'+''.join(f'{v:02x}' for v in r[1]['rendered'])
             ok(live_key==expected_live,f'ordinary preview click samples selected cut time ({live_key}, expected {expected_live})')
             await pg.locator('#mediaFront .key').first.select_option('spoid')
-            b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+            b=await box_bounds();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
             await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[0].chroma?.color")
             key=(await ev(FRONT))[0].get('chroma',{}).get('color')
             expected='#'+''.join(f'{v:02x}' for v in r[0]['rendered'])
@@ -197,10 +214,33 @@ async def main():
               new J.Renderer().frame(cv.getContext('2d'),P,3.88,{scale:960/P.W,noPost:true,noHud:true});
               const rendered=Array.from(cv.getContext('2d').getImageData(240,270,1,1).data).slice(0,3);
               const r=document.getElementById('view').getBoundingClientRect();
-              return {rendered,picked:await J.media.pickColor(c,r.left+r.width*.25,r.top+r.height*.5)};
+              const picked=await J.media.pickColor(c,r.left+r.width*.25,r.top+r.height*.5);
+              const a=J.mediaAssets.get(c.assetId),probe=document.createElement('canvas');probe.width=probe.height=1;
+              const x=probe.getContext('2d');const rgb=src=>{x.drawImage(src,0,0,1,1);return Array.from(x.getImageData(0,0,1,1).data).slice(0,3);};
+              return {rendered,picked,currentTime:a.el.currentTime,element:rgb(a.el),caps:a.caps.map(c=>({key:c.key,rgb:rgb(c.cv)}))};
             }""")
             rgb=[int(seam['picked'][k:k+2],16) for k in (1,3,5)] if seam['picked'] else []
             ok(80<seam['rendered'][0]<175 and len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,seam['rendered'])),f'loop seam sample matches the rendered blend {seam}')
+            # An older seek event may already be queued when a new seek starts. It must not complete the new request.
+            seek_state=await ev("""async () => {
+              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
+              const stale=()=>a.el.dispatchEvent(new Event('seeked'));
+              a.el.addEventListener('seeking',stale);
+              try {await J.media.prepareFrame(P,3.88,null,c);return {seeking:a.el.seeking,ready:a.el.readyState,time:a.el.currentTime};}
+              finally {a.el.removeEventListener('seeking',stale);}
+            }""")
+            ok(not seek_state['seeking'] and seek_state['ready']>=2 and abs(seek_state['time']-.18)<.001,f'early seeked events cannot expose an unfinished frame {seek_state}')
+            await pg.wait_for_function("() => [...J.mediaAssets.values()].every(a=>a.type!=='video'||!a.el.seeking)")
+            for time,red in ((2,30),(12,180)):
+                await ev("""(time) => {
+                  const c=J.ui.project.media.tracks.front.cuts[0];delete c.chroma;c.start=5;c.end=10;
+                  J.uiApi.replan();J.uiApi.seek(time);J.mediaPlace.select(c.id);
+                }""",time)
+                await pg.locator('#mediaFront .key').first.select_option('spoid')
+                b=await box_bounds();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+                await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[0].chroma?.color")
+                col=(await ev(FRONT))[0]['chroma']['color'];rgb=[int(col[k:k+2],16) for k in (1,3,5)]
+                ok(all(abs(a-b)<=3 for a,b in zip(rgb,[red,0,40])),f'inactive video at song time {time} can be sampled ({col})')
             # Hold a decoder result so a mode change can arrive before the asynchronous sample completes.
             for cancel in ('Off','Escape','deselect'):
                 await ev("""() => {
@@ -211,7 +251,7 @@ async def main():
                   });
                 }""")
                 await pg.locator('#mediaFront .key').first.select_option('spoid')
-                b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
+                b=await box_bounds();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
                 await pg.wait_for_function("() => typeof window.releasePick==='function'")
                 if cancel=='Off': await pg.locator('#mediaFront .key').first.select_option('')
                 elif cancel=='Escape': await pg.keyboard.press('Escape')
