@@ -27,6 +27,14 @@ function sequence(ids, A) {
   return n => perm(Math.floor(n / ids.length))[n % ids.length];
 }
 
+/* the pictures placed at a time of the song → [{ c, s, e }]: an end given, else (back track) the next one's start, else the song end.
+   A cut with no picture ('' = 「なし」, or a picture that is gone) still takes its time: nothing automatic shows there */
+function timedSpans(timed, D, layered) {
+  return timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
+    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
+    .filter(x => x.e - x.s > 0.02);
+}
+
 function resolveTrack(m, k, plan) {
   const T = m.tracks[k], A = m.autoFill[k], D = Math.max(0.1, plan.duration || 0);
   const ids = m.assets.map(a => a.id);
@@ -60,9 +68,7 @@ function resolveTrack(m, k, plan) {
   // the front track is layers: its pictures may overlap (a logo all song long, a character for a verse), one without an end stays
   // to the end of the song, and each comes and goes by itself (no つなぎ)
   const layered = k === 'front';
-  const tl = timed.filter(c => c.start < D).sort((a, b) => a.start - b.start)
-    .map((c, i, arr) => ({ c, s: c.start, e: Math.min(D, c.end != null ? c.end : !layered && i + 1 < arr.length ? arr[i + 1].start : D) }))
-    .filter(x => x.e - x.s > 0.02);
+  const tl = timedSpans(timed, D, layered);
   const cut = (list, holes) => {                            // the parts of each [start, end) outside the holes
     const out = [];
     for (const g of list) {
@@ -196,11 +202,17 @@ M.backUnder = (project, li, t0, t1) => {
   const known = new Set(m.assets.map(a => a.id)), cuts = m.tracks.back.cuts || [];
   const own = cuts.find(c => c.lineRef && c.lineRef.line === li);
   if (own) return !!own.assetId && known.has(own.assetId);                          // 「なし」 = nothing under this line
-  if (cuts.some(c => !c.lineRef && c.assetId && known.has(c.assetId) && c.start < t1 && (c.end == null || c.end > t0))) return true;
+  // placed at a time: a picture there counts; any placed cut (also 「なし」) takes its span from the automatic pictures
+  const spans = timedSpans(cuts.filter(c => !c.lineRef), Infinity, false).filter(x => x.s < t1 && x.e > t0);
+  if (spans.some(x => x.c.assetId && known.has(x.c.assetId))) return true;
   const A = m.autoFill && m.autoFill.back;
   if (!A || A.mode !== 'perLine') return false;
   const onFront = new Set(((m.tracks.front && m.tracks.front.cuts) || []).map(c => c.assetId).filter(Boolean));
-  return m.assets.some(a => !onFront.has(a.id));
+  if (!m.assets.some(a => !onFront.has(a.id))) return false;
+  // the automatic picture shows in whatever part of [t0, t1) no placed cut takes
+  let from = t0;
+  for (const x of spans.sort((a, b) => a.s - b.s)) { if (x.s > from + 0.02) return true; from = Math.max(from, x.e); }
+  return t1 - from > 0.02;
 };
 /* the style the planner picks a cut's layout with: over a background picture (and with 「画像の上では控えめに」 on), the layouts that
    fill the screen (busy) are rarely chosen. Same number of random draws; without a picture the style itself (so nothing changes) */

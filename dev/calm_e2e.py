@@ -81,6 +81,37 @@ async def main():
           const st = { bias: { layout: {} } };
           return [4, 5].map(li => [J.media.backUnder(P, li, 20, 24), J.media.calmStyle(st, P, li, 20, 24) === st]); }""", PICS)
         ok(under == [[True, False], [False, True]], f'line 6 (「なし」) has nothing under it and is not made calmer; line 5 is ({under})')
+        print('the same rule as what is shown (resolveTrack)')
+        # for every lyric cut: is a picture under it? asked of M.backUnder, and read from the resolved plan
+        AGREE = r"""(cfg) => {
+          const P = JSON.parse(JSON.stringify(J.ui.project));
+          P.lyrics = Array.from({ length: 12 }, (_, i) => { const t = 2 + i * 4; return `[00:${String(t).padStart(2, '0')}.00]行${i} あいうえお`; }).join('\n');
+          P.media = J.media.normalize(Object.assign(J.media.defaults(), cfg));
+          const plan = J.plan(P, null), bad = [];
+          let n = 0;
+          for (const c of plan.cuts) {
+            if (c.line < 0 || !c.text) continue;
+            n++;
+            const shown = plan.media.back.cuts.some(m => m.assetId && m.start < c.end - 0.02 && m.end > c.start + 0.02);
+            const said = J.media.backUnder(P, c.line, c.start, c.end);
+            if (shown !== said) bad.push([c.line, +c.start.toFixed(2), +c.end.toFixed(2), shown, said]);
+          }
+          return { n, bad };
+        }"""
+        A, B = 'aaaaaaaaaaaa', 'bbbbbbbbbbbb'
+        cfgs = {
+            'a timed 「なし」 over the automatic pictures': dict(PICS, tracks={'back': {'cuts': [{'id': 't1', 'assetId': '', 'start': 9, 'end': 22}]}}),
+            'a timed picture without an end, then a timed 「なし」': dict(PICS, autoFill={'back': {'mode': 'off'}}, tracks={'back': {'cuts': [
+                {'id': 't1', 'assetId': A, 'start': 6, 'end': None}, {'id': 't2', 'assetId': '', 'start': 26, 'end': None}]}}),
+            'timed pictures only (no automatic ones)': dict(PICS, autoFill={'back': {'mode': 'off'}}, tracks={'back': {'cuts': [{'id': 't1', 'assetId': B, 'start': 14, 'end': 30}]}}),
+            'a line set to 「なし」 inside a timed picture': dict(PICS, tracks={'back': {'cuts': [{'id': 't1', 'assetId': A, 'start': 0, 'end': None},
+                {'id': 'l3', 'assetId': '', 'lineRef': {'line': 3}}]}}),
+            'every picture is placed over the lyrics': dict(PICS, tracks={'front': {'cuts': [{'id': 'f1', 'assetId': A, 'start': 0, 'end': None, 'rect': {'x': 0, 'y': 0, 'w': 0.3, 'rot': 0}},
+                {'id': 'f2', 'assetId': B, 'start': 0, 'end': None, 'rect': {'x': 0.3, 'y': 0, 'w': 0.3, 'rot': 0}}]}}),
+        }
+        for name, cfg in cfgs.items():
+            r = await pg.evaluate(AGREE, cfg)
+            ok(r['n'] > 10 and not r['bad'], f"{name}: the rule agrees with what is shown for all {r['n']} cuts {r['bad'][:3]}")
         print('green screen output')
         ok(await plans(media=dict(PICS, calm=True), keyBg='green') == await plans(media=dict(PICS, calm=True), keyBg='green', noHook=True),
            'no pictures are drawn there, so nothing changes')
