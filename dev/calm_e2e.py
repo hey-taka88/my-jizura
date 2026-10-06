@@ -73,6 +73,14 @@ async def main():
         ok(share(before) > 0.05 and share(calm) < share(before) / 3,
            f'screen-filling layouts become rare over pictures ({share(before):.1%} → {share(calm):.1%}, {len(busy)} busy layouts)')
         ok([len(p) for p in calm] == [len(p) for p in before], 'the number of cuts does not change')
+        print('overlapping timed pictures are drawn as placed')
+        ov = await pg.evaluate(r"""(pics) => { const P = JSON.parse(JSON.stringify(J.ui.project));
+          P.lyrics = Array.from({ length: 12 }, (_, i) => { const t = 2 + i * 4; return `[00:${String(t).padStart(2, '0')}.00]行${i} あいうえお`; }).join('\n');
+          P.media = J.media.normalize(Object.assign(J.media.defaults(), pics, { autoFill: { back: { mode: 'off' } }, tracks: { back: { cuts: [
+            { id: 't1', assetId: 'aaaaaaaaaaaa', start: 0, end: 30 }, { id: 't2', assetId: 'bbbbbbbbbbbb', start: 10, end: 20 }] } } }));
+          const plan = J.plan(P, null);
+          return [5, 15, 25].map(t => { const c = J.media.cutAt(plan, t, 'back'); return c ? [c.assetId.slice(0, 1), c.anchor] : null; }); }""", PICS)
+        ok(ov == [['a', 0], ['b', 10], ['a', 0]], f'A, then B, then A again from 20 s (on its own clock) {ov}')
         print('a line without a picture')
         # its own layouts may still differ (the layout picker avoids repeating recent layouts, and earlier lines did change);
         # what matters is that this line is not made calmer: nothing is under it
@@ -92,7 +100,9 @@ async def main():
           for (const c of plan.cuts) {
             if (c.line < 0 || !c.text) continue;
             n++;
-            const shown = plan.media.back.cuts.some(m => m.assetId && m.start < c.end - 0.02 && m.end > c.start + 0.02);
+            // what drawing shows (M.cutAt, as drawTrack), every 0.1 s of the cut
+            let shown = false;
+            for (let t = c.start + 0.03; t < c.end - 0.02 && !shown; t += 0.1) { const m = J.media.cutAt(plan, t, 'back'); shown = !!(m && m.assetId); }
             const said = J.media.backUnder(P, c.line, c.start, c.end);
             if (shown !== said) bad.push([c.line, +c.start.toFixed(2), +c.end.toFixed(2), shown, said]);
           }
@@ -106,6 +116,8 @@ async def main():
             'timed pictures only (no automatic ones)': dict(PICS, autoFill={'back': {'mode': 'off'}}, tracks={'back': {'cuts': [{'id': 't1', 'assetId': B, 'start': 14, 'end': 30}]}}),
             'a line set to 「なし」 inside a timed picture': dict(PICS, tracks={'back': {'cuts': [{'id': 't1', 'assetId': A, 'start': 0, 'end': None},
                 {'id': 'l3', 'assetId': '', 'lineRef': {'line': 3}}]}}),
+            'timed pictures overlapping (A 0–30 s with B 10–20 s)': dict(PICS, autoFill={'back': {'mode': 'off'}}, tracks={'back': {'cuts': [
+                {'id': 't1', 'assetId': A, 'start': 0, 'end': 30}, {'id': 't2', 'assetId': B, 'start': 10, 'end': 20}]}}),
             'two choices for one line in a file (the last one counts)': dict(PICS, tracks={'back': {'cuts': [
                 {'id': 'l2a', 'assetId': '', 'lineRef': {'line': 2}}, {'id': 'l2b', 'assetId': A, 'lineRef': {'line': 2}},
                 {'id': 'l4a', 'assetId': B, 'lineRef': {'line': 4}}, {'id': 'l4b', 'assetId': '', 'lineRef': {'line': 4}}]}}),
