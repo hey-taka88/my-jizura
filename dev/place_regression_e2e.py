@@ -15,14 +15,15 @@ BROWSER = sys.argv[sys.argv.index('--browser') + 1] if '--browser' in sys.argv e
 LYRICS = '[00:01.00]夜明けの色を覚えてる\n[00:05.00]ほどけた声が遠くで鳴った\n[00:09.00]名前のない明日へ\n[00:13.00]おわり'
 FRONT = '() => JSON.parse(JSON.stringify(J.ui.project.media.tracks.front.cuts))'
 ARMED = "() => document.getElementById('viewport').classList.contains('media-spoid')"
-MAKE_CLIP = """async () => {
+MAKE_CLIP = """async (blue) => {
+  blue = blue == null ? 40 : blue;
   const mux = new Mp4Muxer.Muxer({target: new Mp4Muxer.ArrayBufferTarget(),
     video: {codec: 'vp9', width: 320, height: 180, frameRate: 30}, fastStart: 'in-memory'});
   const enc = new VideoEncoder({output: (c, m) => mux.addVideoChunk(c, m), error: e => {throw e;}});
   enc.configure({codec: 'vp09.00.10.08', width: 320, height: 180, bitrate: 2e6, framerate: 30});
   const cv = new OffscreenCanvas(320, 180), x = cv.getContext('2d');
   for (let i = 0; i < 120; i++) {
-    x.fillStyle = `rgb(${30 + 50 * Math.floor(i / 30)},0,40)`; x.fillRect(0, 0, 320, 180);
+    x.fillStyle = `rgb(${30 + 50 * Math.floor(i / 30)},0,${blue})`; x.fillRect(0, 0, 320, 180);
     const f = new VideoFrame(cv, {timestamp: Math.round(i * 1e6 / 30), duration: Math.round(1e6 / 30)});
     enc.encode(f, {keyFrame: i % 30 === 0}); f.close();
   }
@@ -138,7 +139,9 @@ async def main():
                    f'{cancel} restores project and saved rect (original rect present: {existing})')
             # Two cuts use different frames of the same clip; its shared element stays on the last frame prepared.
             video=Path(tmp)/'clock.mp4';video.write_bytes(base64.b64decode(await ev(MAKE_CLIP)))
-            await jz.new_project(lyrics=LYRICS);await jz.add_media([str(video)]);await jz.set_media_options(auto=False)
+            copies=[video,Path(tmp)/'other1.mp4',Path(tmp)/'other2.mp4']
+            for i,copy in enumerate(copies[1:]): copy.write_bytes(base64.b64decode(await ev(MAKE_CLIP,100+i*60)))
+            await jz.new_project(lyrics=LYRICS);await jz.add_media([str(p) for p in copies]);await jz.set_media_options(auto=False)
             for pos,start in ((-.25,0),(.25,1)):
                 await jz.add_timed_media('clock.mp4',0,track='front',x=pos,size=.4,clip_start=start,enter='cut',exit='cut')
             await ev("() => {J.mediaPlace.select(J.ui.project.media.tracks.front.cuts[0].id);J.uiApi.seek(2);}")
@@ -146,11 +149,18 @@ async def main():
             # Start with the ordinary preview; no prepareFrame/export captures exist yet.
             await pg.wait_for_function("() => {const a=[...J.mediaAssets.values()].find(a=>a.type==='video');return a&&!a.el.seeking&&Math.abs(a.el.currentTime-2)<.05;}")
             ok(await ev("() => [...J.mediaAssets.values()].every(a=>!a.caps||a.caps.length===0)"),'ordinary preview has no export captures')
+            await ev("""() => {
+              window.createdVideos=0;window.origCreateElement=document.createElement;
+              document.createElement=function(tag,...args){if(tag==='video')window.createdVideos++;return window.origCreateElement.call(this,tag,...args);};
+            }""")
+            ok(await ev('() => J.media.liveVideos()')==3,'fixture fills the three-video decoder budget')
             await pg.locator('#mediaFront .key').nth(1).select_option('spoid')
             b=await pg.locator('#mediaBox').bounding_box();await pg.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2)
             await pg.wait_for_function("() => J.ui.project.media.tracks.front.cuts[1].chroma?.color")
             live_key=(await ev(FRONT))[1]['chroma']['color']
-            ok(await ev("() => {const a=[...J.mediaAssets.values()].find(a=>a.type==='video');return Math.abs(a.el.currentTime-2)<.05;}"),'sampling does not seek the shared preview element')
+            budget=await ev('() => {document.createElement=window.origCreateElement;return {live:J.media.liveVideos(),extra:window.createdVideos};}')
+            ok(budget['live']<=3 and budget['extra']==0,f'sampling uses only the existing tracked decoders {budget}')
+            ok(await ev('() => !J.ui.playing && Math.abs(J.ui.t-2)<.05'),'video sampling holds the playhead at the clicked time')
             await ev("() => {delete J.ui.project.media.tracks.front.cuts[1].chroma;J.uiApi.replan();}")
             r=await ev("""async () => {
               const S=J.ui;await J.media.prepareFrame(S.plan,2);
@@ -178,14 +188,26 @@ async def main():
               return await J.media.pickColor(c,r.left+r.width*(.5+c.rect.x),r.top+r.height*.5);
             }""")
             rgb=[int(zero[k:k+2],16) for k in (1,3,5)] if zero else []
-            ok(len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,[30,0,40])),f'a new decoder samples the first frame at time zero ({zero})')
+            ok(len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,[30,0,40])),f'the picker samples the first frame at time zero ({zero})')
+            seam=await ev("""async () => {
+              const S=J.ui;for(const c of S.project.media.tracks.front.cuts)delete c.chroma;
+              J.uiApi.replan();J.uiApi.seek(3.88);const P=S.plan,c=S.project.media.tracks.front.cuts[0];
+              await J.media.prepareFrame(P,3.88);
+              const cv=document.createElement('canvas');cv.width=960;cv.height=540;
+              new J.Renderer().frame(cv.getContext('2d'),P,3.88,{scale:960/P.W,noPost:true,noHud:true});
+              const rendered=Array.from(cv.getContext('2d').getImageData(240,270,1,1).data).slice(0,3);
+              const r=document.getElementById('view').getBoundingClientRect();
+              return {rendered,picked:await J.media.pickColor(c,r.left+r.width*.25,r.top+r.height*.5)};
+            }""")
+            rgb=[int(seam['picked'][k:k+2],16) for k in (1,3,5)] if seam['picked'] else []
+            ok(80<seam['rendered'][0]<175 and len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,seam['rendered'])),f'loop seam sample matches the rendered blend {seam}')
             # Hold a decoder result so a mode change can arrive before the asynchronous sample completes.
             for cancel in ('Off','Escape','deselect'):
                 await ev("""() => {
                   const c=J.ui.project.media.tracks.front.cuts[0];delete c.chroma;J.uiApi.replan();J.mediaPlace.select(c.id);
-                  const original=J.media.sampleVideoFrame;
-                  J.media.sampleVideoFrame=(...args)=>new Promise(resolve=>{
-                    window.releasePick=()=>{J.media.sampleVideoFrame=original;resolve('#b20126');};
+                  const original=J.media.pickColor;
+                  J.media.pickColor=(...args)=>new Promise(resolve=>{
+                    window.releasePick=()=>{J.media.pickColor=original;resolve('#b20126');};
                   });
                 }""")
                 await pg.locator('#mediaFront .key').first.select_option('spoid')

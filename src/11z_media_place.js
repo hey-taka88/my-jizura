@@ -17,6 +17,7 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&
 const $ = id => document.getElementById(id);
 const r3 = x => Math.round(x * 1000) / 1000;
 let api = null, S = null, sel = null, spoid = false, box = null, raf = 0, drag = null, rowsKey = '', pickAbort = null;
+let pickFrames = Promise.resolve();
 
 const CSS = `
 .media-front { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -218,18 +219,34 @@ M.pickColor = async (c, clientX, clientY, signal) => {
   const t = -turn, dx = clientX - cx, dy = clientY - cy;
   const u = (dx * Math.cos(t) - dy * Math.sin(t)) / w + 0.5, v = (dx * Math.sin(t) + dy * Math.cos(t)) / h + 0.5;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-  const sample = src => {
+  const sample = (src, alt, blend) => {
     if (!src) return null;
-    const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
     const cv = document.createElement('canvas'); cv.width = cv.height = 1;
     const x = cv.getContext('2d', { willReadFrequently: true });
-    x.drawImage(src, Math.min(sw - 1, Math.floor(u * sw)), Math.min(sh - 1, Math.floor(v * sh)), 1, 1, 0, 0, 1, 1);
+    const paint = (frame, alpha) => {
+      const sw = frame.videoWidth || frame.width, sh = frame.videoHeight || frame.height;
+      x.globalAlpha = alpha;
+      x.drawImage(frame, Math.min(sw - 1, Math.floor(u * sw)), Math.min(sh - 1, Math.floor(v * sh)), 1, 1, 0, 0, 1, 1);
+    };
+    paint(src, 1); if (alt && blend > 0) paint(alt, blend); // the same source-over blend as drawCut's loop seam
     const d = x.getImageData(0, 0, 1, 1).data;
     return '#' + [d[0], d[1], d[2]].map(n => n.toString(16).padStart(2, '0')).join('');
   };
   const vt = a.type === 'video' && pc ? M.videoTimes(P, pc, t0) : null;
-  // Normal preview shares one decoder across cuts. Decode this requested time independently, even without export captures.
-  return vt ? M.sampleVideoFrame(a, vt.main, sample, signal) : sample(a.type === 'video' ? a.thumb : a.source);
+  if (!vt) return sample(a.type === 'video' ? a.thumb : a.source);
+  // Hold the song at the clicked time and reuse the existing decoders/export captures, including both sides of a loop seam.
+  J.uiApi.pause();
+  const read = pickFrames.then(async () => {
+    if (signal && signal.aborted) return null;
+    await M.prepareFrame(P, t0, signal);
+    if (signal && signal.aborted) return null;
+    const src = M.videoCap(a, vt.main), alt = vt.alt != null && vt.k > 0 ? M.videoCap(a, vt.alt) : null;
+    if (!src || (vt.alt != null && vt.k > 0 && !alt)) return null;
+    return sample(src, alt, vt.k);
+  });
+  pickFrames = read.catch(() => {}); // cancelled/failed reads must not block the next request
+  return read;
+
 };
 async function onViewClick(e) {
   if (!spoid) return;
