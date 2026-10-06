@@ -221,6 +221,21 @@ async def main():
             }""")
             rgb=[int(seam['picked'][k:k+2],16) for k in (1,3,5)] if seam['picked'] else []
             ok(80<seam['rendered'][0]<175 and len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,seam['rendered'])),f'loop seam sample matches the rendered blend {seam}')
+            # A small seek can cross a frame boundary in either direction. Delay presentation metadata deterministically.
+            for origin,target,shown_at in ((3.02,3.04,3.0),(3.04,3.02,3.033333)):
+                boundary=await ev("""async ([origin,target,shownAt]) => {
+                  const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
+                  await J.media.prepareCut(P,c,origin);
+                  const Real=window.VideoFrame;let polls=0;
+                  window.VideoFrame=function(src,...args){
+                    if(src===a.el && ++polls<=3)return {timestamp:shownAt*1e6,duration:33333,close(){}};
+                    return new Real(src,...args);
+                  };
+                  try {await J.media.prepareCut(P,c,target);return {polls,time:a.el.currentTime,seeking:a.el.seeking};}
+                  finally {window.VideoFrame=Real;J.media.releaseVideos();}
+                }""",[origin,target,shown_at])
+                ok(boundary['polls']>=4 and not boundary['seeking'] and abs(boundary['time']-target)<.001,
+                   f'short seek across a frame boundary waits for presentation ({origin} to {target}): {boundary}')
             # An older seek event may already be queued when a new seek starts. It must not complete the new request.
             seek_state=await ev("""async () => {
               const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);

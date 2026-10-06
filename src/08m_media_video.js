@@ -139,10 +139,10 @@ async function seekExact(el, time, signal) {
   const settled = once(el, 'seeked', 15000, signal, () => !el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - tt) < 1e-4);
   el.currentTime = tt;
   await settled;
-  // 'seeked' can come before the new frame reaches the element, and drawImage then copies the old one (a loop seam
-  // drawn as the start twice). A jump longer than the frame shown before must show another frame: wait a little
-  // for it (≤ 0.25 s). Without the frame's length, only a long jump is sure to.
-  if (!before || jump <= (before.dur > 0 ? before.dur + 1e-3 : 0.5)) return;
+  // 'seeked' can precede presentation. Even a short seek across the shown frame's timestamp interval needs a new frame.
+  // Without its duration, retain the conservative long-jump check. Waiting is bounded to 0.25 s.
+  if (!before) return;
+  if (before.dur > 0 ? tt >= before.ts && tt < before.ts + before.dur : jump <= 0.5) return;
   for (let i = 0; i < 60; i++) {
     const now = shown(el);
     if (!now || Math.abs(now.ts - before.ts) > 1e-6) return;
