@@ -330,6 +330,25 @@ async def main():
             }""")
             ok(not timed_out['cap'] and not timed_out['frame'] and timed_out['at'] is None,
                f'a timed-out frame is neither captured nor drawn as the requested time {timed_out}')
+            # A stuck presentation must fail quickly after its first timeout, without accepting stale pixels.
+            after=await ev("""async () => {
+              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),VF=window.VideoFrame;
+              window.VideoFrame=class{constructor(){this.timestamp=3e6;this.duration=33333;}close(){}};
+              try {
+                const t0=performance.now(),vt=await J.media.prepareFrame(P,1.5,null,c);
+                return {ms:performance.now()-t0,cap:!!J.media.videoCap(a,vt.main)};
+              } finally {window.VideoFrame=VF;J.media.releaseVideos();}
+            }""")
+            ok(after['ms']<500 and not after['cap'],f'a repeated presentation failure returns quickly without a stale capture {after}')
+            recovered=await ev("""async () => {
+              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
+              const vt=await J.media.prepareCut(P,c,1.5),src=J.media.videoCap(a,vt.main);
+              const cv=document.createElement('canvas');cv.width=cv.height=1;
+              if(src)cv.getContext('2d').drawImage(src,0,0,1,1);
+              const red=cv.getContext('2d').getImageData(0,0,1,1).data[0];J.media.releaseVideos();
+              return {cap:!!src,red};
+            }""")
+            ok(recovered['cap'] and abs(recovered['red']-80)<4,f'frame capture recovers once presentation advances {recovered}')
             # An older seek event may already be queued when a new seek starts. It must not complete the new request.
             seek_state=await ev("""async () => {
               const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);

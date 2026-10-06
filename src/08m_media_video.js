@@ -59,6 +59,7 @@ M.releaseVideo = a => {
 function live(a) {
   a.lastUse = performance.now();
   if (a.live) return;
+  delete a.el.frameCheckFailedAt;
   a.el.src = a.url; a.live = true;
   try { a.el.load(); } catch (e) {}
 }
@@ -158,6 +159,11 @@ function shown(el) {
 async function seekExact(el, time, signal) {
   if (el.readyState < 1) await once(el, 'loadedmetadata', 20000, signal);
   if (signal && signal.aborted) throw new Error('aborted');
+  if (el.frameCheckFailedAt != null) {
+    const frame = shown(el);
+    if (!frame || Math.abs(frame.ts - el.frameCheckFailedAt) < 1e-6) throw new Error('video presentation is still stalled');
+    delete el.frameCheckFailedAt; // presentation advanced since the timeout: exact reads can be tried again
+  }
   const tt = J.clamp(time, 0, Math.max(0, el.duration - 1 / 240));
   if (!el.paused) el.pause();
   if (Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking) return;
@@ -179,9 +185,15 @@ async function seekExact(el, time, signal) {
     await new Promise(r => setTimeout(r, 4));
     if (signal && signal.aborted) throw new Error('aborted');
   }
+  el.frameCheckFailedAt = before.ts;
   throw new Error('timeout presenting video frame at ' + tt);
 }
 const capKey = time => Math.round(time * 1000);
+function warnSeek(a, error) {
+  const stalled = a.el.frameCheckFailedAt;
+  if (stalled == null || a.reportedFrameTimeout !== stalled) console.warn('media: clip seek failed', a.name, error);
+  a.reportedFrameTimeout = stalled;
+}
 // A shared decoder cannot seek for two frame preparations at once (export, or a user sample).
 let frameQueue = Promise.resolve();
 // Double-buffer the copied pictures: a seek must not change a frame the renderer is still using.
@@ -208,7 +220,7 @@ function queuePreview(plan, t, playing, shared, redraw) {
         if (J.mediaAssets.get(a.id) !== a) continue;
         const frames = new Map(uses.map(({ c, vt }) => [c, { main: copies.get(capKey(vt.main)), alt: vt.alt == null ? null : copies.get(capKey(vt.alt)) }]));
         a.preview = { plan, key, bank, frames };
-      } catch (e) { if (signal.aborted) return; console.warn('media: shared preview seek failed', a.name, e); }
+      } catch (e) { if (signal.aborted) return; warnSeek(a, e); }
     }
   });
   frameQueue = prepared.catch(() => {});
@@ -263,7 +275,7 @@ async function prepareFrame(plan, t, signal, sampleCut) {
       } catch (e) {
         a.caps = []; a.at = null; // do not label partial or stale pictures as the requested export/sample frame
         if (signal && signal.aborted) throw e;
-        console.warn('media: clip seek failed', a.name, e);
+        warnSeek(a, e);
       }
     }
     trim(new Set(out.keys()));
