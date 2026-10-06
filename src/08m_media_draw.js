@@ -25,20 +25,13 @@ function lastBeat(B, t) {
   return ans < 0 ? null : B[ans];
 }
 
-/* one cut at time t with opacity a. fx = { in, out } (0..1, 1 = fully shown) for 登場 / 退場, null = none */
-function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
-  const asset = J.mediaAssets.get(c.assetId);
-  if (!asset || a <= 0.001) return false;
-  let vt = null, frame = null;
-  if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
-    vt = M.videoTimes(plan, c, t);
-    frame = vt && M.videoFrame(asset, vt.main);
-    if (!frame) return false;
-  } else if (!asset.source) return false;
-  const sw = asset.w, sh = asset.h, R = c.rect;
+/* where a cut is drawn at time t (design units): its size, top-left corner, turn and 登場・退場 (fx = { in, out }, 0..1) — also what
+   the eyedropper of the placement editor maps a click through (11z_media_place.js). a: what the opacity is multiplied by */
+M.cutBox = (plan, c, t, W, H, fx, sw, sh) => {
+  const R = c.rect;
   const base = R ? W * R.w / sw : c.fit === 'contain' ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
   const lt = t - c.start, p = J.clamp(lt / Math.max(0.1, c.dur)), hp = c.hp || { sign: 1, ph: 0, per: 7 };
-  let z = 1, px = 0, py = 0, pan = 0;
+  let z = 1, px = 0, py = 0, pan = 0, a = 1;
   switch (c.hold) {
     case 'kenburns': if (c.kb) { const e = ease(p); z = J.lerp(c.kb.s0, c.kb.s1, e); px = J.lerp(c.kb.x0, c.kb.x1, e) * W; py = J.lerp(c.kb.y0, c.kb.y1, e) * H; } break;
     case 'pan': z = ZMAX.pan; pan = (0.5 - 0.5 * Math.cos(Math.PI * (0.15 + 0.7 * p))) * 2 - 1; break;    // across, at an even pace
@@ -57,13 +50,38 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   };
   if (fx && fx.in != null) move(c.enter, fx.in, false);
   if (fx && fx.out != null) move(c.exit, fx.out, true);
-  if (a <= 0.001) return false;
   const dw = sw * base * z, dh = sh * base * z;
   if (pan) { const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2); if (mx >= my) px = pan * mx * hp.sign; else py = pan * my * hp.sign; }
   if (!R && c.fit !== 'contain' && !(fx && (fx.in != null || fx.out != null) && (c.enter === 'slide' || c.exit === 'slide'))) {
     const mx = Math.max(0, (dw - W) / 2), my = Math.max(0, (dh - H) / 2);   // a filled frame never shows its edge while drifting
     px = J.clamp(px, -mx, mx); py = J.clamp(py, -my, my);
   }
+  let x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
+  if (R) { x0 += R.x * W; y0 += R.y * H; }
+  return { x0, y0, dw, dh, turn: R && R.rot ? R.rot * Math.PI / 180 : 0, a, clip, base };
+};
+/* 登場・退場 of a front layer at t (each comes and goes by itself) */
+M.layerFx = (c, t) => {
+  const lt = t - c.start, fx = {};
+  if (c.enter !== 'cut' && c.inDur > 0 && lt < c.inDur) fx.in = ease(lt / c.inDur);
+  if (c.exit !== 'cut' && c.outDur > 0 && c.end - t < c.outDur) fx.out = ease((c.end - t) / c.outDur);
+  return fx;
+};
+
+/* one cut at time t with opacity a. fx = { in, out } (0..1, 1 = fully shown) for 登場 / 退場, null = none */
+function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
+  const asset = J.mediaAssets.get(c.assetId);
+  if (!asset || a <= 0.001) return false;
+  let vt = null, frame = null;
+  if (asset.type === 'video') {                // a clip: the frame for this song time (exact when exporting)
+    vt = M.videoTimes(plan, c, t);
+    frame = vt && M.videoFrame(asset, vt.main);
+    if (!frame) return false;
+  } else if (!asset.source) return false;
+  const sw = asset.w, sh = asset.h;
+  const box = M.cutBox(plan, c, t, W, H, fx, sw, sh), { dw, dh, turn, clip, base } = box;
+  a *= box.a;
+  if (a <= 0.001) return false;
   // the size bucket depends on the cut's largest size, not on this frame's zoom (no new copy while zooming)
   const zMax = c.hold === 'kenburns' && c.kb ? Math.max(c.kb.s0, c.kb.s1) : ZMAX[c.hold] || 1;
   let src = frame || M.sourceFor(asset, sw * base * zMax * scale, sh * base * zMax * scale);
@@ -74,9 +92,7 @@ function drawCut(ctx, plan, c, t, W, H, a, scale, fx) {
   // only a large step down (a picture drawn far smaller than its copy) needs the slower filter
   const step = frame ? 1 : Math.max(src.width / (dw * scale), src.height / (dh * scale));
   ctx.imageSmoothingQuality = step > 1.6 ? 'high' : 'low';
-  let x0 = W / 2 - dw / 2 + px, y0 = H / 2 - dh / 2 + py;
-  const turn = R && R.rot ? R.rot * Math.PI / 180 : 0;
-  if (R) { x0 += R.x * W; y0 += R.y * H; }
+  let { x0, y0 } = box;
   if (clip) {
     const k = ease(clip.k), d = clip.d;
     ctx.save(); ctx.beginPath();
@@ -178,11 +194,8 @@ function drawLayers(ctx, plan, P, t, W, H, scale) {
     ctx.imageSmoothingEnabled = true;
     ctx.globalCompositeOperation = BLEND[P.blend] || 'source-over';
     for (const c of cs) {
-      const lt = t - c.start, fx = {};
-      if (c.enter !== 'cut' && c.inDur > 0 && lt < c.inDur) fx.in = ease(lt / c.inDur);
-      if (c.exit !== 'cut' && c.outDur > 0 && c.end - t < c.outDur) fx.out = ease((c.end - t) / c.outDur);
       ctx.save();
-      try { drawCut(ctx, plan, c, t, W, H, P.opacity * c.opacity, scale, fx); } finally { ctx.restore(); }
+      try { drawCut(ctx, plan, c, t, W, H, P.opacity * c.opacity, scale, M.layerFx(c, t)); } finally { ctx.restore(); }
     }
   } catch (e) { console.warn('media front', e); }
   finally { ctx.restore(); }

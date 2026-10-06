@@ -4,7 +4,8 @@ usage: python3 build.py && python3 dev/place_e2e.py [--browser chromium]
   automatic backgrounds · dragging the frame moves it, a corner resizes it, the knob turns it (Shift: 15° steps) — the preview
   shows it there · start / end / opacity in the list · スポイト: a click on the picture takes the colour under it as the key
   colour; a click beside it is refused; Esc stops it · 「中央に戻す」 · ✕ removes it · after a reload the placements and the
-  list come back · no page errors.
+  list come back · an interrupted drag (pointercancel, Esc) keeps nothing · the eyedropper follows the motion of the picture ·
+  no page errors.
 Exit code 0 = all checks passed."""
 import asyncio, os, sys, tempfile
 from PIL import Image, ImageDraw
@@ -12,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from jizura_driver import Jizura
 
 BROWSER = sys.argv[sys.argv.index('--browser') + 1] if '--browser' in sys.argv else 'auto'
-MAG, BLUE, SCREEN = (255, 0, 255), (40, 60, 200), (40, 180, 70)
+MAG, BLUE, SCREEN, RED = (255, 0, 255), (40, 60, 200), (40, 180, 70), (220, 30, 30)
 FRONT = "() => JSON.parse(JSON.stringify(J.ui.project.media.tracks.front.cuts))"
 # the colour of the preview frame at a point of the page (the canvas as shown)
 PIXEL = """async ([px, py]) => {
@@ -32,6 +33,7 @@ def make(d):
     Image.new('RGB', (1280, 720), BLUE).save(os.path.join(d, 'blue.png'))
     im = Image.new('RGBA', (300, 300), (0, 0, 0, 0)); ImageDraw.Draw(im).ellipse([10, 10, 290, 290], fill=MAG + (255,)); im.save(os.path.join(d, 'logo.png'))
     gs = Image.new('RGB', (400, 300), SCREEN); ImageDraw.Draw(gs).ellipse([150, 100, 250, 200], fill=(250, 250, 250)); gs.save(os.path.join(d, 'gscreen.png'))
+    sp = Image.new('RGB', (400, 300), RED); ImageDraw.Draw(sp).rectangle([200, 0, 399, 299], fill=SCREEN); sp.save(os.path.join(d, 'split.png'))
 
 
 async def main():
@@ -75,6 +77,15 @@ async def main():
         await pg.keyboard.down('Shift'); await pg.mouse.move(cx + 200, cy + 3, steps=6); await pg.mouse.up(); await pg.keyboard.up('Shift')
         r3 = (await ev(FRONT))[0]['rect']
         ok(r3['rot'] == 90, f'the knob turns it, in 15° steps with Shift ({r3})')
+        print('an interrupted drag')
+        b = await pg.locator('#mediaBox').bounding_box(); cx, cy = b['x'] + b['width'] / 2, b['y'] + b['height'] / 2
+        await pg.mouse.move(cx, cy); await pg.mouse.down(); await pg.mouse.move(cx - 120, cy + 40, steps=4)
+        await ev("() => document.getElementById('mediaBox').dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1, bubbles: true }))")
+        await pg.mouse.up()
+        ok((await ev(FRONT))[0]['rect'] == r3 and await ev("() => J.ui.plan.media.front.cuts[0].rect.x") == r3['x'], f'pointercancel puts it back where it was ({(await ev(FRONT))[0]["rect"]})')
+        await pg.mouse.move(cx, cy); await pg.mouse.down(); await pg.mouse.move(cx + 90, cy + 30, steps=4)
+        await pg.keyboard.press('Escape'); await pg.mouse.up()
+        ok((await ev(FRONT))[0]['rect'] == r3, 'Esc during a drag puts it back too')
         print('time / opacity in the list')
         row = pg.locator('#mediaFront .mf-row').first
         await row.locator('.st').fill('2'); await row.locator('.st').dispatch_event('change')
@@ -107,6 +118,19 @@ async def main():
         ok(not await ev("() => document.getElementById('viewport').classList.contains('media-spoid')"), 'Esc stops the eyedropper')
         await pg.locator('#mediaFront .mf-row').nth(1).locator('.fit').click()
         ok((await ev(FRONT))[1]['rect'] == {'x': 0, 'y': 0, 'w': 0.4, 'rot': 0}, '「中央に戻す」')
+        print('スポイト through the motion')
+        sid = (await jz.add_timed_media('split.png', 0, 10, track='front', size=0.4, hold='push'))['id']
+        await ev(f"() => J.mediaPlace.select('{sid}')")
+        await ev("() => J.uiApi.seek(9.4)"); await pg.wait_for_timeout(200)          # pushed in to about 1.2× its placed size
+        z = await ev(f"() => {{ const c = J.ui.plan.media.front.cuts.find(c => c.id === '{sid}'); const a = J.ui.project.media.assets.find(x => x.id === c.assetId); return J.media.cutBox(J.ui.plan, c, 9.4, J.ui.plan.W, J.ui.plan.H, J.media.layerFx(c, 9.4), a.w, a.h).dw / (0.4 * J.ui.plan.W); }}")
+        vr = await pg.locator('#view').bounding_box()
+        hx, hy = vr['x'] + vr['width'] * (0.5 + 0.22), vr['y'] + vr['height'] * 0.5   # outside where it is placed, inside where it is drawn
+        await ev(f"() => J.mediaPlace.select('{sid}')"); await ev("() => J.mediaPlace.spoid()")
+        await pg.mouse.click(hx, hy)
+        col2 = next(c for c in await ev(FRONT) if c['id'] == sid).get('chroma', {}).get('color', '')
+        ok(z > 1.15 and col2 and near(tuple(int(col2[i:i + 2], 16) for i in (1, 3, 5)), SCREEN, 10),
+           f'the eyedropper follows the picture as drawn (×{z:.2f}): a click on its pushed-out edge takes that colour ({col2})')
+        await jz.remove_timed_media(sid)
         print('reload / remove')
         await ev("() => J.uiApi.flushSave()")
         await pg.reload(); await pg.wait_for_function('window.J && J.ui && J.ui.plan && J.mediaUI && J.mediaPlace')

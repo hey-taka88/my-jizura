@@ -161,7 +161,8 @@ function onDown(e) {
   const g = geometry(c); if (!g) return;
   e.preventDefault(); e.stopPropagation();
   const kind = e.target.classList.contains('rot') ? 'rot' : e.target.tagName === 'I' ? 'size' : 'move';
-  drag = { kind, c, g, R0: Object.assign({}, g.R), x0: e.clientX, y0: e.clientY, d0: Math.max(4, Math.hypot(e.clientX - g.cx, e.clientY - g.cy)) };
+  drag = { kind, c, g, R0: Object.assign({}, g.R), orig: c.rect ? Object.assign({}, c.rect) : null,
+    x0: e.clientX, y0: e.clientY, d0: Math.max(4, Math.hypot(e.clientX - g.cx, e.clientY - g.cy)) };
   box.setPointerCapture(e.pointerId);
 }
 function onMove(e) {
@@ -177,6 +178,14 @@ function onMove(e) {
   setRect(c, R);
 }
 function onUp() { if (!drag) return; drag = null; commit(); }
+// an interrupted drag (pointercancel: a touch taken over by the system, Esc) puts it back where it was — nothing is kept
+function onCancel() {
+  if (!drag) return;
+  const { c, orig } = drag; drag = null;
+  if (orig) c.rect = orig; else delete c.rect;
+  const pc = planCut(c.id); if (pc) pc.rect = orig ? Object.assign({}, orig) : null;
+  S.need = true;
+}
 
 /* ---------- スポイト ---------- */
 function startSpoid() {
@@ -184,12 +193,19 @@ function startSpoid() {
   api.toast(L('プレビューで、抜きたい色（前景の画像の上）をクリックしてください（Esc でやめる）', 'Click the colour to take out, on the picture in the preview (Esc to cancel)'));
 }
 function stopSpoid() { spoid = false; const vp = $('viewport'); if (vp) vp.classList.remove('media-spoid'); }
-/* the colour of the picture itself under a point of the preview, or null outside it */
+/* the colour of the picture itself under a point of the preview, or null outside it — through where it is drawn at this moment
+   (its motion and 登場・退場 included: M.cutBox, as the renderer), or where it is placed when it is not on screen now */
 M.pickColor = (c, clientX, clientY) => {
   const g = geometry(c); if (!g) return null;
   const a = J.mediaAssets.get(c.assetId); if (!a) return null;
-  const t = -g.R.rot * Math.PI / 180, dx = clientX - g.cx, dy = clientY - g.cy;
-  const u = (dx * Math.cos(t) - dy * Math.sin(t)) / g.w + 0.5, v = (dx * Math.sin(t) + dy * Math.cos(t)) / g.h + 0.5;
+  const P = S.plan, pc = planCut(c.id), t0 = S.t;
+  let cx = g.cx, cy = g.cy, w = g.w, h = g.h, turn = g.R.rot * Math.PI / 180;
+  if (pc && M.cutBox && pc.start <= t0 && t0 < pc.end) {
+    const B = M.cutBox(P, pc, t0, P.W, P.H, M.layerFx(pc, t0), g.meta.w, g.meta.h);
+    cx = g.cr.left + (B.x0 + B.dw / 2) * g.k; cy = g.cr.top + (B.y0 + B.dh / 2) * g.k; w = B.dw * g.k; h = B.dh * g.k; turn = B.turn;
+  }
+  const t = -turn, dx = clientX - cx, dy = clientY - cy;
+  const u = (dx * Math.cos(t) - dy * Math.sin(t)) / w + 0.5, v = (dx * Math.sin(t) + dy * Math.cos(t)) / h + 0.5;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
   const src = a.type === 'video' ? (a.live && a.el && a.el.readyState >= 2 ? a.el : a.thumb) : a.source;
   if (!src) return null;
@@ -233,9 +249,9 @@ J.mediaPlace = {
       box.addEventListener('pointerdown', onDown);
       box.addEventListener('pointermove', onMove);
       box.addEventListener('pointerup', onUp);
-      box.addEventListener('pointercancel', onUp);
+      box.addEventListener('pointercancel', onCancel);
       vp.addEventListener('click', onViewClick, true);
-      document.addEventListener('keydown', e => { if (e.key === 'Escape' && spoid) stopSpoid(); });
+      document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (drag) onCancel(); else if (spoid) stopSpoid(); });
     }
     rows();
   },
