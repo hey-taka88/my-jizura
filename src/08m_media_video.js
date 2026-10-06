@@ -89,12 +89,12 @@ function needed(plan, t) {
 }
 
 /* preview: follow the song with as few seeks as possible */
-let sampling = 0;
+let preparing = 0;
 let exportUntil = 0;                          // an export owns the clips while it runs (the preview must not seek them)
 let previewJob = null;
 M.cancelPreview = () => { if (previewJob) { previewJob.latest = null; previewJob.controller.abort(); } };
 M.syncPreview = (plan, t, playing, redraw) => {
-  if (!plan || !plan.media || sampling || performance.now() < exportUntil) return;
+  if (!plan || !plan.media || preparing || performance.now() < exportUntil) return;
   if (previewJob) {
     previewJob.latest = { plan, t, playing, redraw };
     let obsolete = plan !== previewJob.plan || playing !== previewJob.playing || (!playing && t !== previewJob.t);
@@ -207,7 +207,7 @@ function queuePreview(plan, t, playing, shared, redraw) {
   const job = previewJob = { plan, t, playing, shared, latest: null, controller: new AbortController() };
   const signal = job.controller.signal;
   const prepared = frameQueue.then(async () => {
-    if (signal.aborted || sampling || performance.now() < exportUntil) return;
+    if (signal.aborted || preparing || performance.now() < exportUntil) return;
     for (const { a, uses, key } of shared) {
       if (J.mediaAssets.get(a.id) !== a) continue;
       const bank = a.preview && a.preview.bank === 0 ? 1 : 0;
@@ -250,7 +250,8 @@ M.releaseVideos = () => { exportUntil = 0; };
 async function prepareFrame(plan, t, signal, sampleCut) {
   if (!plan || !plan.media) return;
   if (signal && signal.aborted) throw new Error('aborted');
-  if (sampleCut) sampling++; else exportUntil = performance.now() + 2000;
+  preparing++;
+  if (!sampleCut) exportUntil = performance.now() + 2000;
   try {
     M.pauseVideos();
     const vt = sampleCut && M.videoTimes(plan, sampleCut, t);
@@ -287,7 +288,8 @@ async function prepareFrame(plan, t, signal, sampleCut) {
     trim(new Set(out.keys()));
     return sampleCut ? vt : undefined;
   } finally {
-    if (sampleCut) sampling--; else exportUntil = performance.now() + 2000;
+    preparing--;
+    if (!sampleCut) exportUntil = performance.now() + 2000;
   }
 }
 
@@ -299,7 +301,7 @@ M.videoCap = (a, time) => {
 };
 /* what to draw for a clip at clip time `time`: an exact copy, the element, or null (nothing decoded yet) */
 M.videoFrame = (a, time, cut, alt = false) => {
-  if (sampling || performance.now() < exportUntil) return M.videoCap(a, time);
+  if (preparing || performance.now() < exportUntil) return M.videoCap(a, time);
   if (a.previewNeeded) {
     const frame = a.preview && a.preview.frames.get(cut);
     return frame ? (alt ? frame.alt : frame.main) : null;

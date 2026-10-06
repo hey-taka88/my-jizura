@@ -315,6 +315,23 @@ async def main():
             }""")
             ok(resumed_frame['aborted'] and resumed_frame['released'] and resumed_frame['cap'] and resumed_frame['ms']>=300,
                f'the same-time request after abort still waits for presentation {resumed_frame}')
+            owned=await ev("""async () => {
+              const S=J.ui,other=S.project.media.tracks.front.cuts[1],start=other.start,time=S.t;
+              other.start=10;J.uiApi.replan();J.uiApi.seek(.5);
+              const P=S.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
+              await J.media.prepareCut(P,c,3.02);
+              const Real=window.VideoFrame;let released=false;
+              window.VideoFrame=function(src,...args){if(src===a.el&&!released&&Math.abs(a.el.currentTime-3.04)<.01)return {timestamp:3e6,duration:33333,close(){}};return new Real(src,...args);};
+              const timer=setTimeout(()=>{released=true;},2300),t0=performance.now();
+              try {
+                await J.media.prepareFrame(P,3.04);
+                const src=J.media.videoCap(a,J.media.videoTimes(P,c,3.04).main),cv=document.createElement('canvas');cv.width=cv.height=1;
+                if(src)cv.getContext('2d').drawImage(src,0,0,1,1);
+                return {ms:performance.now()-t0,time:a.el.currentTime,red:cv.getContext('2d').getImageData(0,0,1,1).data[0]};
+              } finally {clearTimeout(timer);window.VideoFrame=Real;J.media.releaseVideos();other.start=start;J.uiApi.replan();J.uiApi.seek(time);}
+            }""")
+            ok(owned['ms']>=2200 and abs(owned['time']-3.04)<.01 and abs(owned['red']-180)<4,
+               f'an export read retains its decoder beyond the preview cooldown {owned}')
             slow=await ev("""async () => {
               const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
               await J.media.prepareCut(P,c,3.02);
