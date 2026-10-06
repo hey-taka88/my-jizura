@@ -223,7 +223,9 @@ function queuePreview(plan, t, playing, shared, redraw) {
           const i = copies.size, cv = pool[i] || (pool[i] = document.createElement('canvas'));
           const k = Math.min(1, 1920 / Math.max(a.sw, a.sh)), w = Math.round(a.sw * k), h = Math.round(a.sh * k);
           if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-          cv.getContext('2d').drawImage(a.el, 0, 0, w, h);
+          const cx = cv.getContext('2d');
+          cx.clearRect(0, 0, w, h);                   // a reused copy: a clip with transparency must not keep the frame before under it
+          cx.drawImage(a.el, 0, 0, w, h);
           copies.set(capKey(time), cv);
         }
         if (signal.aborted) return;
