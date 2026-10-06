@@ -160,8 +160,9 @@ async function seekExact(el, time, signal) {
   el.currentTime = tt;
   await settled;
   // 'seeked' can precede presentation. Even a short seek across the shown frame's timestamp interval needs a new frame.
-  // Without its duration, retain the conservative long-jump check. Slow decoding gets the normal seek timeout.
-  if (!before) return;
+  // Without its duration, retain the conservative long-jump check. Slow decoding gets the normal seek timeout. After one
+  // timeout this clip is no longer checked: a clip (or browser) whose frame times never change must not stall every frame.
+  if (!before || el.frameCheckOff) return;
   if (before.dur > 0 ? tt >= before.ts && tt < before.ts + before.dur : jump <= 0.5) return;
   const deadline = performance.now() + 15000;
   while (performance.now() < deadline) {
@@ -170,6 +171,7 @@ async function seekExact(el, time, signal) {
     await new Promise(r => setTimeout(r, 4));
     if (signal && signal.aborted) throw new Error('aborted');
   }
+  el.frameCheckOff = true;
   throw new Error('timeout presenting video frame at ' + tt);
 }
 const capKey = time => Math.round(time * 1000);

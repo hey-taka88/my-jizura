@@ -324,6 +324,17 @@ async def main():
               finally {delete a.el.currentTime;}
             }""")
             ok(grid['ms']<2000 and grid['cap'],f'a seek reported on a 1/600 s time grid completes without the timeout {grid}')
+            # After that timeout the clip is not checked again: a clip (or browser) whose frame times never change must not
+            # stall every later frame for the whole timeout. VideoFrame is stubbed to keep reporting one frame.
+            after=await ev("""async () => {
+              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),VF=window.VideoFrame,off=!!a.el.frameCheckOff;
+              window.VideoFrame=class{constructor(){this.timestamp=0;this.duration=33333;}close(){}};
+              try {
+                const t0=performance.now(),vt=await J.media.prepareFrame(P,1.5,null,c);
+                return {off,ms:performance.now()-t0,cap:!!J.media.videoCap(a,vt.main)};
+              } finally {window.VideoFrame=VF;delete a.el.frameCheckOff;J.media.releaseVideos();}
+            }""")
+            ok(after['off'] and after['ms']<500 and after['cap'],f'after one presentation timeout the clip is not checked again {after}')
             await pg.wait_for_function("() => [...J.mediaAssets.values()].every(a=>a.type!=='video'||!a.el.seeking)")
             for time,red in ((2,30),(12,180)):
                 await ev("""(time) => {
