@@ -3,9 +3,11 @@ usage: python3 build.py && python3 dev/easy_dance_e2e.py [--browser chromium]
   the section is in the かんたん panel · a green-screen clip (made in the page: VP9 in MP4, a magenta dancer on a green screen)
   chosen with its button goes over the lyrics for the whole song, standing on the bottom, 0.9 of the frame tall, its screen taken
   out (the background picture shows through), the lyrics split to the sides · it is not one of the automatic backgrounds ·
-  位置 / 大きさ keep it on the bottom · 背景 「抜かない」 shows the screen again · 差し替え with a transparent PNG keeps its place
-  and drops the key · what is found: alpha (also a clip's thumbnail with transparency), green, blue, plain · ✕ takes it off and
-  keeps the clip in the list · the same project gives the same plan.
+  位置 / 大きさ keep it on the bottom · 背景 「抜かない」 shows the screen again · another 画面比 keeps its height and its feet on
+  the bottom · 差し替え with a transparent PNG keeps its place and drops the key, the clip it replaced leaves the list (never a
+  background) · what is found: alpha (also a clip's thumbnail with transparency), green, blue, plain · ✕ takes it off and its clip
+  leaves the list · a broken file named like a clip in the list is refused · the same clip under another name is the one in the
+  list · the same project gives the same plan.
 Exit code 0 = all checks passed."""
 import asyncio, base64, os, sys, tempfile
 from PIL import Image, ImageDraw
@@ -114,27 +116,37 @@ async def main():
         await pg.eval_on_selector('#easyDance .dz-tol', "(el) => { el.value = '0.2'; el.dispatchEvent(new Event('change')); }")
         d = await ev("() => J.mediaEasy.dancer()")
         ok(d['chroma']['color'] == 'auto' and abs(d['chroma']['tol'] - 0.2) < 1e-6, f"「背景の色を抜く」 and 抜く範囲 ({d['chroma']})")
+        print('another 画面比')
+        await jz.set_output(aspect='9:16')
+        R = (await ev("() => J.mediaEasy.dancer()"))['rect']; h = R['w'] * 1080 * 320 / (180 * 1920)
+        ok(abs(h - 0.6) < 0.01 and abs(R['y'] + h / 2 - 0.5) < 0.003 and abs(R['x'] - 0.25) < 1e-6, f'9:16 keeps its height and its feet on the bottom ({R}, height {h:.3f})')
+        await jz.set_output(aspect='16:9')
+        R = (await ev("() => J.mediaEasy.dancer()"))['rect']; h = R['w'] * 1920 * 320 / (180 * 1080)
+        ok(abs(h - 0.6) < 0.01 and abs(R['y'] + h / 2 - 0.5) < 0.003, f'and back to 16:9 ({R}, height {h:.3f})')
         print('replace, and what is found')
+        BACK = "() => J.ui.plan.media.back.cuts.map(c => c.assetId)"
+        found = await ev("""(did) => {
+          const th = document.createElement('canvas'); th.width = 160; th.height = 90;
+          const x = th.getContext('2d'); x.fillStyle = '#ff00ff'; x.fillRect(60, 10, 40, 80);       // a clip with transparency round its dancer
+          J.mediaAssets.set('fakealpha', { type: 'video', thumb: th, w: 160, h: 90 });
+          const out = { clip: J.mediaEasy.detect(did).kind, alphaClip: J.mediaEasy.detect('fakealpha').kind };
+          J.mediaAssets.delete('fakealpha');
+          return out;
+        }""", did)
         await pg.set_input_files('#easyDance .dz-file', os.path.join(pics, 'figure.png'))
         await pg.wait_for_function("(id) => { const c = J.mediaEasy.dancer(); return !!c && c.assetId !== id; }", arg=did, timeout=15000)
         d = await ev("() => J.mediaEasy.dancer()")
         R = d['rect']; h = R['w'] * 1920 * 600 / (300 * 1080)
         ok('chroma' not in d and abs(R['x'] - 0.25) < 1e-6 and abs(h - 0.6) < 0.01 and abs(R['y'] + h / 2 - 0.5) < 0.003,
            f'差し替え with a transparent PNG: same place and height, no key ({R})')
-        ok(len(await ev("() => J.ui.project.media.tracks.front.cuts")) == 1, 'still one picture over the lyrics')
-        found = await ev("""async () => {
-          const ids = {}; for (const a of J.ui.project.media.assets) ids[a.name] = a.id;
-          const th = document.createElement('canvas'); th.width = 160; th.height = 90;
-          const x = th.getContext('2d'); x.fillStyle = '#ff00ff'; x.fillRect(60, 10, 40, 80);       // a clip with transparency round its dancer
-          J.mediaAssets.set('fakealpha', { type: 'video', thumb: th, w: 160, h: 90 });
-          const out = { clip: J.mediaEasy.detect(ids['dance_gb.mp4']).kind, figure: J.mediaEasy.detect(ids['figure.png']).kind, alphaClip: J.mediaEasy.detect('fakealpha').kind };
-          J.mediaAssets.delete('fakealpha');
-          return out;
-        }""")
+        names = await ev("() => J.ui.project.media.assets.map(a => a.name)")
+        back = await ev(BACK)
+        ok(len(await ev("() => J.ui.project.media.tracks.front.cuts")) == 1 and names == ['blue.png', 'figure.png'] and did not in back and back,
+           f'still one picture over the lyrics; the green clip it replaced leaves the list and never becomes a background ({names}, back {back})')
         await jz.add_media([os.path.join(pics, 'bluescreen.png'), os.path.join(pics, 'photo.png')])
-        found.update(await ev("() => { const ids = {}; for (const a of J.ui.project.media.assets) ids[a.name] = a.id; return { blue: J.mediaEasy.detect(ids['bluescreen.png']).kind, photo: J.mediaEasy.detect(ids['photo.png']).kind }; }"))
-        ok(found == {'clip': 'green', 'figure': 'alpha', 'alphaClip': 'alpha', 'blue': 'blue', 'photo': 'plain'}, f'found: {found}')
         ids = await ev("() => Object.fromEntries(J.ui.project.media.assets.map(a => [a.name, a.id]))")
+        found.update(await ev("(ids) => ({ figure: J.mediaEasy.detect(ids['figure.png']).kind, blue: J.mediaEasy.detect(ids['bluescreen.png']).kind, photo: J.mediaEasy.detect(ids['photo.png']).kind })", ids))
+        ok(found == {'clip': 'green', 'figure': 'alpha', 'alphaClip': 'alpha', 'blue': 'blue', 'photo': 'plain'}, f'found: {found}')
         await ev("(id) => J.mediaEasy.use(id)", ids['bluescreen.png'])
         d = await ev("() => J.mediaEasy.dancer()")
         await ev("(id) => J.mediaEasy.use(id)", ids['photo.png'])
@@ -144,13 +156,26 @@ async def main():
         ok(same, 'the same project gives the same plan')
         print('remove')
         await pg.click('#easyDance .dz-del')
-        left = await ev("() => ({ front: J.ui.project.media.tracks.front.cuts.length, assets: J.ui.project.media.assets.length, pick: /動画を選ぶ/.test(document.getElementById('easyDance').textContent) })")
-        ok(left == {'front': 0, 'assets': 5, 'pick': True}, f'✕ takes it off, the clips stay in the list, the button comes back ({left})')
+        left = await ev("() => ({ front: J.ui.project.media.tracks.front.cuts.length, assets: J.ui.project.media.assets.map(a => a.name), pick: /動画を選ぶ/.test(document.getElementById('easyDance').textContent) })")
+        back = await ev(BACK)
+        ok(left == {'front': 0, 'assets': ['blue.png'], 'pick': True} and set(back) == {ids['blue.png']},
+           f'✕ takes it off, the clips it used leave the list (no stray background), the button comes back ({left}, back {back})')
+        print('a clip already in the list')
+        await jz.add_media([clip])                                                      # the green clip as one of the pictures
+        await pg.set_input_files('#easyDance .dz-file', os.path.join(pics, 'figure.png'))
+        await pg.wait_for_function("() => !!J.mediaEasy.dancer()", timeout=15000)
+        fig = (await ev("() => J.mediaEasy.dancer()"))['assetId']
+        bad = os.path.join(tmp, 'bad'); os.makedirs(bad, exist_ok=True)
+        with open(os.path.join(bad, 'dance_gb.mp4'), 'wb') as f: f.write(os.urandom(4096))     # the same name, not a clip
+        await pg.set_input_files('#easyDance .dz-file', os.path.join(bad, 'dance_gb.mp4'))
+        await pg.wait_for_function("() => /再生でき|読み込めません/.test(document.getElementById('toast').textContent)", timeout=30000)
+        d = await ev("() => ({ c: J.mediaEasy.dancer(), toast: document.getElementById('toast').textContent })")
+        ok(d['c']['assetId'] == fig and '再生できません' in d['toast'], f"a broken file with the name of a clip in the list is refused, the dancer stays ({d['c']['assetId']} / {fig}, {d['toast']!r})")
         import shutil; again = os.path.join(tmp, 'renamed.mp4'); shutil.copy(clip, again)
         await pg.set_input_files('#easyDance .dz-file', again)
-        await pg.wait_for_function("() => !!J.mediaEasy.dancer()", timeout=15000)
-        d = await ev("() => ({ c: J.mediaEasy.dancer(), n: J.ui.project.media.assets.length })")
-        ok(d['c']['assetId'] == did and d['n'] == 5, f"the same clip under another name uses the one in the list ({d['c']['assetId']} / {did}, {d['n']} assets)")
+        await pg.wait_for_function("(id) => J.mediaEasy.dancer().assetId === id", arg=did, timeout=15000)
+        n = await ev("() => J.ui.project.media.assets.map(a => a.name)")
+        ok(n == ['blue.png', 'dance_gb.mp4'], f"the same clip under another name uses the one in the list ({n})")
         await ev("() => J.mediaEasy.remove()")
         await ev("() => { const el = document.getElementById('eCenter'); el.checked = false; el.dispatchEvent(new Event('change')); }")
         plan1 = await ev("() => JSON.stringify(J.ui.plan.cuts.map(c => [c.start, c.layout]))")
