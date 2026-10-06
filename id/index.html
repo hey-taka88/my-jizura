@@ -5990,9 +5990,15 @@ function needed(plan, t) {
 /* preview: follow the song with as few seeks as possible */
 let sampling = 0;
 let exportUntil = 0;                          // an export owns the clips while it runs (the preview must not seek them)
-let previewBusy = false;
+let previewJob = null;
+M.cancelPreview = () => { if (previewJob) { previewJob.latest = null; previewJob.controller.abort(); } };
 M.syncPreview = (plan, t, playing, redraw) => {
-  if (!plan || !plan.media || sampling || previewBusy || performance.now() < exportUntil) return;
+  if (!plan || !plan.media || sampling || performance.now() < exportUntil) return;
+  if (previewJob) {
+    previewJob.latest = { plan, t, playing, redraw };
+    if (plan !== previewJob.plan || playing !== previewJob.playing || (!playing && t !== previewJob.t)) previewJob.controller.abort();
+    return;
+  }
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && (a.at != null || (a.caps && a.caps.length))) { a.at = null; a.caps = []; }   // export copies are stale now
   const { out, next } = needed(plan, t);
   const shared = [];
@@ -6031,7 +6037,7 @@ M.syncPreview = (plan, t, playing, redraw) => {
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && !out.has(a.id) && a.el && !a.el.paused) a.el.pause();
   for (const id of next) { const a = J.mediaAssets.get(id); if (a && a.type === 'video' && !a.live && M.liveVideos() < MAX_LIVE) live(a); }
   trim(new Set([...out.keys(), ...next]));
-  if (shared.length) queuePreview(plan, shared, redraw);
+  if (shared.length) queuePreview(plan, t, playing, shared, redraw);
 };
 M.pauseVideos = () => { for (const a of J.mediaAssets.values()) if (a.type === 'video' && a.el && !a.el.paused) a.el.pause(); };
 
@@ -6055,25 +6061,27 @@ async function seekExact(el, time, signal) {
   el.currentTime = tt;
   await settled;
   // 'seeked' can precede presentation. Even a short seek across the shown frame's timestamp interval needs a new frame.
-  // Without its duration, retain the conservative long-jump check. Waiting is bounded to 0.25 s.
+  // Without its duration, retain the conservative long-jump check. Slow decoding gets the normal seek timeout.
   if (!before) return;
   if (before.dur > 0 ? tt >= before.ts && tt < before.ts + before.dur : jump <= 0.5) return;
-  for (let i = 0; i < 60; i++) {
+  const deadline = performance.now() + 15000;
+  while (performance.now() < deadline) {
     const now = shown(el);
     if (!now || Math.abs(now.ts - before.ts) > 1e-6) return;
     await new Promise(r => setTimeout(r, 4));
     if (signal && signal.aborted) throw new Error('aborted');
   }
-  console.warn('media: the clip frame did not change after a seek to', tt);
+  throw new Error('timeout presenting video frame at ' + tt);
 }
 const capKey = time => Math.round(time * 1000);
 // A shared decoder cannot seek for two frame preparations at once (export, or a user sample).
 let frameQueue = Promise.resolve();
 // Double-buffer the copied pictures: a seek must not change a frame the renderer is still using.
-function queuePreview(plan, shared, redraw) {
-  previewBusy = true;
+function queuePreview(plan, t, playing, shared, redraw) {
+  const job = previewJob = { plan, t, playing, latest: null, controller: new AbortController() };
+  const signal = job.controller.signal;
   const prepared = frameQueue.then(async () => {
-    if (sampling || performance.now() < exportUntil) return;
+    if (signal.aborted || sampling || performance.now() < exportUntil) return;
     for (const { a, uses, key } of shared) {
       if (J.mediaAssets.get(a.id) !== a) continue;
       const bank = a.preview && a.preview.bank === 0 ? 1 : 0;
@@ -6081,23 +6089,29 @@ function queuePreview(plan, shared, redraw) {
       try {
         for (const { vt } of uses) for (const time of [vt.main, vt.alt]) {
           if (time == null || copies.has(capKey(time))) continue;
-          await seekExact(a.el, time);
+          await seekExact(a.el, time, signal);
           const i = copies.size, cv = pool[i] || (pool[i] = document.createElement('canvas'));
           const k = Math.min(1, 1920 / Math.max(a.sw, a.sh)), w = Math.round(a.sw * k), h = Math.round(a.sh * k);
           if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
           cv.getContext('2d').drawImage(a.el, 0, 0, w, h);
           copies.set(capKey(time), cv);
         }
+        if (signal.aborted) return;
         if (J.mediaAssets.get(a.id) !== a) continue;
         const frames = new Map(uses.map(({ c, vt }) => [c, { main: copies.get(capKey(vt.main)), alt: vt.alt == null ? null : copies.get(capKey(vt.alt)) }]));
         a.preview = { plan, key, bank, frames };
-      } catch (e) { console.warn('media: shared preview seek failed', a.name, e); }
+      } catch (e) { if (signal.aborted) return; console.warn('media: shared preview seek failed', a.name, e); }
     }
   });
   frameQueue = prepared.catch(() => {});
-  prepared.finally(() => { previewBusy = false; if (redraw) redraw(); });
+  frameQueue.finally(() => {
+    previewJob = null;
+    if (job.latest) { const r = job.latest; M.syncPreview(r.plan, r.t, r.playing, r.redraw); }
+    if (redraw) redraw();
+  });
 }
 M.prepareFrame = (plan, t, signal, sampleCut) => {
+  M.cancelPreview(); // explicit sampling/export takes precedence over an obsolete preview request
   const prepared = frameQueue.then(() => prepareFrame(plan, t, signal, sampleCut));
   frameQueue = prepared.catch(() => {});
   return prepared;
@@ -6139,6 +6153,7 @@ async function prepareFrame(plan, t, signal, sampleCut) {
         }
         a.at = capKey(uniq[uniq.length - 1]);
       } catch (e) {
+        a.caps = []; a.at = null; // do not label partial or stale pictures as the requested export/sample frame
         if (signal && signal.aborted) throw e;
         console.warn('media: clip seek failed', a.name, e);
       }
@@ -6158,7 +6173,8 @@ M.videoCap = (a, time) => {
 };
 /* what to draw for a clip at clip time `time`: an exact copy, the element, or null (nothing decoded yet) */
 M.videoFrame = (a, time, cut, alt = false) => {
-  if (a.previewNeeded && !sampling && performance.now() >= exportUntil) {
+  if (sampling || performance.now() < exportUntil) return M.videoCap(a, time);
+  if (a.previewNeeded) {
     const frame = a.preview && a.preview.frames.get(cut);
     return frame ? (alt ? frame.alt : frame.main) : null;
   }
@@ -38744,6 +38760,7 @@ function pause() {
   $('btnPlay').textContent = '▶'; $('btnPlay').setAttribute('aria-label', 'Putar'); S.need = true;
 }
 function seek(t) {
+  if (J.media && J.media.cancelPreview) J.media.cancelPreview();   // my-jizura: discard pending pictures from the old playhead
   S.t = J.clamp(t, 0, Math.max(0, S.plan.duration - 1e-3));
   if (S.audio) { if (S.playing) AP.play(S.audio.buffer, S.t, playRate()); }
   else S.t0 = performance.now() - S.t * 1000 / playRate();

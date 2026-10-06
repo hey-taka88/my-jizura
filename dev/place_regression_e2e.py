@@ -184,6 +184,23 @@ async def main():
             playing=await ev('() => {const rgb=previewRGB(),t=J.ui.t;J.uiApi.pause();return {rgb,t};}')
             ok(abs(playing['rgb'][0][0]-80)<4 and abs(playing['rgb'][1][0]-130)<4,
                f'playing preview keeps separate shared-video frames {playing}')
+            await ev('() => J.uiApi.seek(.5)');await preview_ready([30,80])
+            await ev("""() => {
+              const a=J.mediaAssets.get(J.ui.plan.media.front.cuts[0].assetId),Real=window.VideoFrame;
+              const before=new Real(a.el),staleTS=before.timestamp;before.close();
+              window.previewPolls=0;window.restorePreviewFrame=()=>{window.VideoFrame=Real;};
+              window.VideoFrame=function(src,...args){
+                if(src===a.el&&Math.abs(a.el.currentTime-2)<.01){window.previewPolls++;return {timestamp:staleTS,duration:33333,close(){}};}
+                return new Real(src,...args);
+              };J.uiApi.seek(2);
+            }""")
+            await pg.wait_for_function('() => window.previewPolls>2')
+            await ev('() => {J.uiApi.seek(1.5);window.scrubStart=performance.now();}')
+            latest=await preview_ready([80,130])
+            latest_ms=await ev('() => performance.now()-window.scrubStart')
+            await ev('() => {window.restorePreviewFrame();delete window.restorePreviewFrame;}')
+            ok(latest_ms<1000 and abs(latest[0][0]-80)<4 and abs(latest[1][0]-130)<4,
+               f'a new scrub interrupts obsolete shared-video decoding ({latest}, {latest_ms:.0f}ms)')
             await ev('() => J.uiApi.seek(2)');await preview_ready([130,180])
             ok(await ev('() => J.media.liveVideos()')==3,'fixture fills the three-video decoder budget')
             await pg.locator('#mediaFront .key').nth(1).select_option('spoid')
@@ -257,6 +274,38 @@ async def main():
                 }""",[origin,target,shown_at])
                 ok(boundary['polls']>=4 and not boundary['seeking'] and abs(boundary['time']-target)<.001,
                    f'short seek across a frame boundary waits for presentation ({origin} to {target}): {boundary}')
+            slow=await ev("""async () => {
+              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
+              await J.media.prepareCut(P,c,3.02);
+              const Real=window.VideoFrame,t0=performance.now();let polls=0;
+              window.VideoFrame=function(src,...args){
+                if(src===a.el&&++polls<=100)return {timestamp:3e6,duration:33333,close(){}};
+                return new Real(src,...args);
+              };
+              try {await J.media.prepareCut(P,c,3.04);return {polls,ms:performance.now()-t0};}
+              finally {window.VideoFrame=Real;J.media.releaseVideos();}
+            }""")
+            ok(slow['polls']>100 and slow['ms']>300,f'a slow presented frame is awaited beyond 240ms {slow}')
+            timed_out=await ev("""async () => {
+              const S=J.ui,P=S.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),exporting=S.exporting;
+              S.exporting=true;await J.media.prepareCut(P,c,3.02);
+              const Real=window.VideoFrame,clock=performance.now.bind(performance),descriptor=Object.getOwnPropertyDescriptor(performance,'now');
+              let polls=0;
+              window.VideoFrame=function(src,...args){if(src===a.el){polls++;return {timestamp:3e6,duration:33333,close(){}};}return new Real(src,...args);};
+              // Advance only the timeout clock after several polls; no need to stall CI for 15 real seconds.
+              Object.defineProperty(performance,'now',{configurable:true,value:()=>clock()+(polls>4?16000:0)});
+              try {
+                await J.media.prepareFrame(P,3.04);
+                const vt=J.media.videoTimes(P,c,3.04);
+                return {cap:!!J.media.videoCap(a,vt.main),frame:!!J.media.videoFrame(a,vt.main,c),at:a.at};
+              } finally {
+                window.VideoFrame=Real;
+                if(descriptor)Object.defineProperty(performance,'now',descriptor);else delete performance.now;
+                J.media.releaseVideos();S.exporting=exporting;
+              }
+            }""")
+            ok(not timed_out['cap'] and not timed_out['frame'] and timed_out['at'] is None,
+               f'a timed-out frame is neither captured nor drawn as the requested time {timed_out}')
             # An older seek event may already be queued when a new seek starts. It must not complete the new request.
             seek_state=await ev("""async () => {
               const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
