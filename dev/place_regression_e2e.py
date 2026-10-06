@@ -148,6 +148,31 @@ async def main():
                 saved=await ev("() => JSON.parse(localStorage.getItem('jizura.project.v1')).media.tracks.front.cuts[0]")
                 ok((await ev(FRONT))[0].get('rect')==before and saved.get('rect')==before,
                    f'{cancel} restores project and saved rect (original rect present: {existing})')
+            # Imported duplicate IDs must not redirect the second row's edit/remove to the first cut.
+            await jz.add_timed_media('split.png',4,track='front',size=.3)
+            await jz.add_timed_media('split.png',8,track='front',size=.3)
+            await jz.add_timed_media('split.png',10,track='front',size=.3)
+            await jz.add_timed_media('split.png',12,track='front',size=.3)
+            identities=await ev("""() => {
+              const S=J.ui,cs=S.project.media.tracks.front.cuts;cs[0].id=cs[1].id='duplicate';cs[2].id='c0';cs[3].id='bad id';cs[4].id='c3';
+              S.project.media=J.media.normalize(S.project.media);J.uiApi.replan();J.mediaPlace.select(null);
+              return S.project.media.tracks.front.cuts.map(c=>c.id);
+            }""")
+            ok(len(set(identities))==5 and identities[0]=='duplicate' and identities[2]=='c0' and identities[4]=='c3',
+               f'normalization regenerates duplicate IDs without colliding with a later valid ID {identities}')
+            await pg.locator('#mediaFront .st').nth(1).evaluate("el=>{el.value='5';el.dispatchEvent(new Event('change',{bubbles:true}));}")
+            edited=await ev(FRONT)
+            ok([c['start'] for c in edited]==[0,5,8,10,12],f'editing the second normalized row changes only that cut {[c["start"] for c in edited]}')
+            await ev('() => J.uiApi.flushSave()');await pg.reload()
+            await pg.wait_for_function('window.J&&J.ui&&J.ui.plan&&J.mediaPlace')
+            loaded=await ev(FRONT)
+            ok([c['id'] for c in loaded]==identities and [c['start'] for c in loaded]==[0,5,8,10,12],
+               'normalized identities and timings survive save/reload')
+            # Reload removes the driver's hidden upload input; restore that test-only control for the next fixture.
+            await ev("() => {const i=document.createElement('input');i.type='file';i.multiple=true;i.id='jzDriverFiles';i.hidden=true;document.body.appendChild(i);}")
+            await pg.locator('#mediaFront .del').nth(1).click()
+            remaining=await ev(FRONT)
+            ok([c['id'] for c in remaining]==[identities[0],*identities[2:]],'removing the second normalized row preserves all other cuts')
             # Two cuts use different frames of the same clip; its shared element stays on the last frame prepared.
             video=Path(tmp)/'clock.mp4';video.write_bytes(base64.b64decode(await ev(MAKE_CLIP)))
             copies=[video,Path(tmp)/'other1.mp4',Path(tmp)/'other2.mp4']
@@ -206,21 +231,26 @@ async def main():
             ok(abs(solo_seam[0][0]-90)<4,f'a single preview cut blends both loop-seam frames {solo_seam}')
             await ev('() => {J.ui.project.media.tracks.front.cuts[1].start=0;J.uiApi.replan();}')
             for leave_overlap in (False,True):
-                await ev('(leave) => {J.ui.project.media.tracks.front.cuts[1].end=leave?2.2:14;J.uiApi.replan();J.uiApi.seek(.5);}',leave_overlap)
+                await ev('(leave) => {J.ui.project.media.tracks.front.cuts[1].end=leave?1.4:14;J.uiApi.replan();J.uiApi.seek(.5);}',leave_overlap)
                 await preview_ready([30,80])
                 await ev("""() => {
                   const a=J.mediaAssets.get(J.ui.plan.media.front.cuts[0].assetId),Real=window.VideoFrame;
                   const before=new Real(a.el),staleTS=before.timestamp;before.close();window.previewPolls=0;
                   window.restorePreviewFrame=()=>{window.VideoFrame=Real;};
                   window.VideoFrame=function(src,...args){
-                    if(src===a.el&&a.el.currentTime>=1.9&&a.el.currentTime<2.1){window.previewPolls++;return {timestamp:staleTS,duration:33333,close(){}};}
+                    if(src===a.el&&a.el.currentTime>=1.1&&a.el.currentTime<1.3){window.previewPolls++;return {timestamp:staleTS,duration:33333,close(){}};}
                     return new Real(src,...args);
-                  };J.uiApi.seek(1.9);document.getElementById('btnPlay').click();
+                  };J.uiApi.seek(1.1);document.getElementById('btnPlay').click();
                 }""")
                 await pg.wait_for_function('() => window.previewPolls>2')
-                await pg.wait_for_function('(t) => J.ui.t>t',arg=2.5 if leave_overlap else 3.3)
+                await pg.wait_for_function('(t) => J.ui.t>t',arg=1.7 if leave_overlap else 2.4)
+                # Keep the expected snapshot inside one constant-colour interval, away from a second boundary.
+                # Wait for its pixels, not only the playhead; a permanently stalled read cannot satisfy this.
+                expected=[80,0] if leave_overlap else [130,180]
+                try:
+                    await pg.wait_for_function('(reds) => previewRGB().every((rgb,i)=>Math.abs(rgb[0]-reds[i])<4)',arg=expected,timeout=500)
+                except Exception: pass
                 moved=await ev('() => ({t:J.ui.t,rgb:previewRGB()})')
-                expected=[130,0] if leave_overlap else [180,80]
                 ok(all(abs(moved['rgb'][i][0]-red)<4 for i,red in enumerate(expected)),
                    f'playback discards stalled frames (left overlap: {leave_overlap}) {moved}')
                 await ev('() => {J.uiApi.pause();window.restorePreviewFrame();delete window.restorePreviewFrame;J.uiApi.seek(.5);}')
@@ -344,10 +374,12 @@ async def main():
               finally {window.VideoFrame=Real;J.media.releaseVideos();}
             }""")
             ok(slow['polls']>100 and slow['ms']>300,f'a slow presented frame is awaited beyond 240ms {slow}')
-            timed_out=await ev("""async () => {
+            faults=await ev("""async () => {
               const S=J.ui,P=S.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),exporting=S.exporting;
+              // Keep the real preview out of the entire injected timeout/retry/recovery sequence.
               S.exporting=true;await J.media.prepareCut(P,c,3.02);
               const Real=window.VideoFrame,clock=performance.now.bind(performance),descriptor=Object.getOwnPropertyDescriptor(performance,'now');
+              const restoreClock=()=>{if(descriptor)Object.defineProperty(performance,'now',descriptor);else delete performance.now;};
               let polls=0;
               window.VideoFrame=function(src,...args){if(src===a.el){polls++;return {timestamp:3e6,duration:33333,close(){}};}return new Real(src,...args);};
               // Advance only the timeout clock after several polls; no need to stall CI for 15 real seconds.
@@ -355,33 +387,23 @@ async def main():
               try {
                 await J.media.prepareFrame(P,3.04);
                 const vt=J.media.videoTimes(P,c,3.04);
-                return {cap:!!J.media.videoCap(a,vt.main),frame:!!J.media.videoFrame(a,vt.main,c),at:a.at};
-              } finally {
+                const timed_out={cap:!!J.media.videoCap(a,vt.main),frame:!!J.media.videoFrame(a,vt.main,c),at:a.at};
+                restoreClock();J.media.releaseVideos();
+                // The same unchanged presentation must fail immediately; do not briefly restore real metadata here.
+                const t0=performance.now(),retry=await J.media.prepareCut(P,c,1.5);
+                const after={ms:performance.now()-t0,cap:!!J.media.videoCap(a,retry.main)};
                 window.VideoFrame=Real;
-                if(descriptor)Object.defineProperty(performance,'now',descriptor);else delete performance.now;
-                J.media.releaseVideos();S.exporting=exporting;
-              }
+                const fresh=await J.media.prepareCut(P,c,1.5),src=J.media.videoCap(a,fresh.main);
+                const cv=document.createElement('canvas');cv.width=cv.height=1;
+                if(src)cv.getContext('2d').drawImage(src,0,0,1,1);
+                const recovered={cap:!!src,red:cv.getContext('2d').getImageData(0,0,1,1).data[0]};
+                return {timed_out,after,recovered};
+              } finally {window.VideoFrame=Real;restoreClock();J.media.releaseVideos();S.exporting=exporting;}
             }""")
+            timed_out,after,recovered=(faults[k] for k in ('timed_out','after','recovered'))
             ok(not timed_out['cap'] and not timed_out['frame'] and timed_out['at'] is None,
                f'a timed-out frame is neither captured nor drawn as the requested time {timed_out}')
-            # A stuck presentation must fail quickly after its first timeout, without accepting stale pixels.
-            after=await ev("""async () => {
-              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId),VF=window.VideoFrame;
-              window.VideoFrame=class{constructor(){this.timestamp=3e6;this.duration=33333;}close(){}};
-              try {
-                const t0=performance.now(),vt=await J.media.prepareFrame(P,1.5,null,c);
-                return {ms:performance.now()-t0,cap:!!J.media.videoCap(a,vt.main)};
-              } finally {window.VideoFrame=VF;J.media.releaseVideos();}
-            }""")
             ok(after['ms']<500 and not after['cap'],f'a repeated presentation failure returns quickly without a stale capture {after}')
-            recovered=await ev("""async () => {
-              const P=J.ui.plan,c=P.media.front.cuts[0],a=J.mediaAssets.get(c.assetId);
-              const vt=await J.media.prepareCut(P,c,1.5),src=J.media.videoCap(a,vt.main);
-              const cv=document.createElement('canvas');cv.width=cv.height=1;
-              if(src)cv.getContext('2d').drawImage(src,0,0,1,1);
-              const red=cv.getContext('2d').getImageData(0,0,1,1).data[0];J.media.releaseVideos();
-              return {cap:!!src,red};
-            }""")
             ok(recovered['cap'] and abs(recovered['red']-80)<4,f'frame capture recovers once presentation advances {recovered}')
             # An older seek event may already be queued when a new seek starts. It must not complete the new request.
             seek_state=await ev("""async () => {
