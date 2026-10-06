@@ -19,7 +19,7 @@ PHASES = {   # what a tool is for (the summary adds time and calls up per phase)
     'edit': {'add_timed_media', 'remove_timed_media', 'set_line_style', 'set_text_options', 'set_line_media', 'set_look',
              'set_media_options', 'media_omakase', 'lock_motion_palette', 'set_word_times', 'set_range_style'},
     'check': {'get_plan', 'get_line', 'get_motion_plan', 'preview', 'status', 'options', 'list_files', 'run_info'},
-    'output': {'save_project', 'export_mp4'},
+    'output': {'save_project', 'save_bundle', 'export_mp4'},
     'record': {'log_note', 'start_run'},
 }
 PHASE_OF = {t: p for p, ts in PHASES.items() for t in ts}
@@ -176,7 +176,7 @@ class RunLog:
                                                'media': [{k: a.get(k) for k in ('name', 'id', 'type', 'loaded')} for a in plan.get('media', [])],
                                                'file': None})
                 # the exact project behind a preview / an export / a save is kept (once per state)
-                if rec['tool'] in ('preview', 'export_mp4', 'save_project') and h not in self._project_files:
+                if rec['tool'] in ('preview', 'export_mp4', 'save_project', 'save_bundle') and h not in self._project_files:
                     p = os.path.join(self.dir, 'projects', f'{h}.jizura.json')
                     with open(p, 'w', encoding='utf-8') as f: f.write(text)
                     self._project_files.add(h)

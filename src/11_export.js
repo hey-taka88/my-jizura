@@ -268,6 +268,7 @@ class ZipWriter {
     return new Blob([...this.parts, ...this.central, end.buffer], { type: 'application/zip' });
   }
 }
+J.ZipWriter = ZipWriter;   // my-jizura: the 素材込み .jizura.zip (11z_media_bundle.js) is written with it
 /* layers: transparent PNGs in two folders — back/ (background graphic + decorations behind the lyrics) and front/
    (lyrics, their decorations, ghosts, HUD). Screen effects are applied to both, so stacking front over back matches. */
 J.exportPNGZip = async ({ plan, project, transparent, layers, onProgress, signal, every = 1, range }) => {

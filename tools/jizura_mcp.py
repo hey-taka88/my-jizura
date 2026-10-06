@@ -222,9 +222,10 @@ async def new_project(title: str = '', artist: str = '', aspect: str = '16:9', l
 @mcp.tool()
 @recorded
 async def open_project(path: str) -> dict:
-    """Open a saved .jizura.json from the working folder (use the `saved` path that save_project returned). Pictures and clips are
-    not inside the file: the plan's `missing` lists the ones to add again with add_media (they are recognised by content, so every
-    line and timed placement gets its picture back). Returns the plan."""
+    """Open a saved .jizura.json or .jizura.zip from the working folder (use the `saved` path that save_project / save_bundle
+    returned). A .jizura.json does not hold the pictures and clips: the plan's `missing` lists the ones to add again with add_media
+    (they are recognised by content, so every line and timed placement gets its picture back). A .jizura.zip brings them back
+    itself, with the imported fonts and the song. Returns the plan."""
     p = inside(path)
     return await call(lambda jz: jz.open_project(p))
 
@@ -238,6 +239,20 @@ async def save_project(path: str = 'project.jizura.json', replace: bool = False)
     async def f(jz):
         p, info = target(path[:-12] if path.lower().endswith('.jizura.json') else path, '.jizura.json', replace)
         await jz.save_project(p); _written.add(p); RUN.output(p, 'save_project', info); return info
+    return await call(f)
+
+
+@mcp.tool()
+@recorded
+async def save_bundle(path: str = 'project.jizura.zip', replace: bool = False) -> dict:
+    """Save the project WITH its pictures, clips, imported fonts and song as one .jizura.zip in the working folder (「素材込みで保存」):
+    open_project on it — or 「開く」 in a browser on another PC — brings everything back. Names work as in save_project. Returns
+    {requested, saved, collision, assets, fonts, song, missing (not in this browser, so not included), pcFonts (fonts of the PC: by
+    name only), size}."""
+    async def f(jz):
+        p, info = target(path[:-11] if path.lower().endswith('.jizura.zip') else path, '.jizura.zip', replace)
+        r = await jz.save_bundle(p); _written.add(p); RUN.output(p, 'save_bundle', info)
+        info.update({k: r[k] for k in ('assets', 'fonts', 'song', 'missing', 'pcFonts', 'size')}); return info
     return await call(f)
 
 

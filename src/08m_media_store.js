@@ -125,6 +125,12 @@ M.restore = async project => {
   return { loaded, missing };
 };
 
+/* the stored original of a picture / clip ({ name, type, data: ArrayBuffer } or null) and a way to put one back — the
+   素材込み file (11z_media_bundle.js) carries these bytes. An id is the content hash: M.hashBytes checks a copy */
+M.storedFile = async id => { try { const r = await idbGet(id); return r && r.data ? r : null; } catch (e) { return null; } };
+M.putStoredFile = (id, rec) => idbPut(id, rec);
+M.hashBytes = hashId;
+
 M.remove = async id => {
   const a = J.mediaAssets.get(id);
   if (a) { release(a); J.mediaAssets.delete(id); }

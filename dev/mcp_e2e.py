@@ -25,7 +25,7 @@ KEEP = sys.argv[sys.argv.index('--keep') + 1] if '--keep' in sys.argv else None
 TOOLS = {'list_files', 'status', 'options', 'new_project', 'open_project', 'save_project', 'set_lyrics', 'load_song', 'add_media', 'remove_media',
          'set_line_media', 'set_look', 'set_media_options', 'media_omakase', 'set_output', 'get_plan', 'preview', 'export_mp4',
          'add_timed_media', 'remove_timed_media', 'get_line', 'set_line_style', 'set_text_options', 'relink_media',
-         'log_note', 'run_info', 'start_run', 'get_motion_plan', 'lock_motion_palette', 'set_word_times', 'set_range_style'}
+         'log_note', 'run_info', 'start_run', 'get_motion_plan', 'lock_motion_palette', 'set_word_times', 'set_range_style', 'save_bundle'}
 LINES = ['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', 'ねえ、まだ間に合うかな', '名前のない明日へ']
 
 
@@ -249,6 +249,9 @@ async def main():
                'the interlude can leave the title out; the title and every line stay')
             print('relink')
             r = await call('save_project', {'path': 'relink.jizura.json'})
+            rb = await call('save_bundle', {'path': 'relink'})
+            ok(rb['saved'] == 'relink.jizura.zip' and rb['assets'] == 3 and rb['song'] and not rb['missing'] and os.path.getsize(os.path.join(d, rb['saved'])) == rb['size'],
+               f"save_bundle: the pictures and the song go in ({ {k: rb[k] for k in ('saved', 'assets', 'song', 'missing', 'size')} })")
             async with stdio_client(params) as (r2, w2):                     # a fresh server: nothing loaded yet
                 async with ClientSession(r2, w2) as s2:
                     await s2.initialize()
@@ -263,6 +266,14 @@ async def main():
                     r9 = await call2('relink_media', {'paths': ['pics']})
                     ok(sorted(r9['relinked']) == ['01.png', '02.png', '03.png'] and not r9['missing'] and 'renamed.png' in r9['files'],
                        f"relink_media finds them by content, a renamed file too {r9}")
+            async with stdio_client(params) as (r3, w3):                     # another fresh server: the .jizura.zip alone brings them back
+                async with ClientSession(r3, w3) as s3:
+                    await s3.initialize()
+                    res = await s3.call_tool('open_project', {'path': rb['saved']}, read_timeout_seconds=600 if not str(inspect.signature(s3.call_tool).parameters['read_timeout_seconds'].annotation).count('timedelta') else datetime.timedelta(seconds=600))
+                    sc = getattr(res, 'structuredContent', None) or getattr(res, 'structured_content', None)
+                    pb = sc if isinstance(sc, dict) else json.loads(res.content[0].text)
+                    ok(not pb['missing'] and len(pb['media']) == 3 and all(m['loaded'] for m in pb['media']) and pb['song'] and [l['text'] for l in pb['lines']] == [l['text'] for l in p8['lines']],
+                       f"open_project on the .jizura.zip in a fresh session: pictures and song are back, nothing missing ({pb['missing']}, song {pb['song']})")
             r = await call('set_output', {'aspect': '9:16'})
             ok(r['aspect'] == '9:16' and r['size'] == [1080, 1920], f'set_output: {r}')
             print('制作の記録')
