@@ -201,6 +201,24 @@ async def main():
             }""")
             rgb=[int(seam['picked'][k:k+2],16) for k in (1,3,5)] if seam['picked'] else []
             ok(80<seam['rendered'][0]<175 and len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,seam['rendered'])),f'loop seam sample matches the rendered blend {seam}')
+            # The preview gets the clips back as soon as the sample is read (no 2-second export hold).
+            await ev('() => J.uiApi.seek(1)')
+            try:
+                await pg.wait_for_function("""() => {const a=[...J.mediaAssets.values()].find(a=>a.type==='video'&&a.name==='clock.mp4'),P=J.ui.plan;
+                  const want=P.media.front.cuts.map(c=>J.media.videoTimes(P,c,1).main);
+                  return a&&!a.el.seeking&&want.some(w=>Math.abs(a.el.currentTime-w)<.02);}""",timeout=1000)
+                followed=True
+            except Exception: followed=False
+            ok(followed,'after a video sample the preview follows a seek right away')
+            # A selected clip cut that is not showing at the playhead is still sampled at its own time (its first frame here).
+            idle=await ev("""async () => {
+              const S=J.ui,c=S.project.media.tracks.front.cuts[0];c.start=6;J.uiApi.replan();J.uiApi.seek(2);
+              const pc=S.plan.media.front.cuts.find(x=>x.id===c.id),r=document.getElementById('view').getBoundingClientRect();
+              return {showing:pc.start<=2&&2<pc.end,picked:await J.media.pickColor(c,r.left+r.width*(.5+c.rect.x),r.top+r.height*.5)};
+            }""")
+            rgb=[int(idle['picked'][k:k+2],16) for k in (1,3,5)] if idle['picked'] else []
+            ok(not idle['showing'] and len(rgb)==3 and all(abs(a-b)<=3 for a,b in zip(rgb,[30,0,40])),f'a video cut not showing now is sampled at its own time {idle}')
+            await ev('() => {J.ui.project.media.tracks.front.cuts[0].start=0;J.uiApi.replan();}')
             # Hold a decoder result so a mode change can arrive before the asynchronous sample completes.
             for cancel in ('Off','Escape','deselect'):
                 await ev("""() => {

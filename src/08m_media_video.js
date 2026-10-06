@@ -149,9 +149,20 @@ async function seekExact(el, time, signal) {
 const capKey = time => Math.round(time * 1000);
 M.prepareFrame = async (plan, t, signal) => {
   if (!plan || !plan.media) return;
+  await prepare(needed(plan, t).out, signal);
+};
+/* the eyedropper: the frame(s) of this one cut at song time t, also when the cut is not showing at t (null = no clip
+   time there). It holds the clips only while it reads: M.releaseVideos() gives them back to the preview right after. */
+M.prepareCut = async (plan, c, t, signal) => {
+  const vt = plan && c && c.type === 'video' ? M.videoTimes(plan, c, t) : null;
+  if (!vt) return null;
+  await prepare(new Map([[c.assetId, [{ c, vt }]]]), signal);
+  return vt;
+};
+M.releaseVideos = () => { exportUntil = 0; };
+async function prepare(out, signal) {
   exportUntil = performance.now() + 2000;
   M.pauseVideos();
-  const { out } = needed(plan, t);
   for (const a of J.mediaAssets.values()) if (a.type === 'video') { a.caps = []; a.at = null; }
   for (const [id, uses] of out) {
     const a = J.mediaAssets.get(id);
@@ -181,7 +192,7 @@ M.prepareFrame = async (plan, t, signal) => {
   }
   trim(new Set(out.keys()));
   exportUntil = performance.now() + 2000;
-};
+}
 
 /* an exact copy made for this export frame, or null */
 M.videoCap = (a, time) => {
