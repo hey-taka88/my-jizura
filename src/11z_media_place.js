@@ -3,7 +3,7 @@
    · 「前景（歌詞の上）」 in the pictures panel: every picture placed over the lyrics (project.media.tracks.front, timed cuts) with
      its time, opacity and クロマキー; 「前」 on a picture of the list puts it there for the whole song (then its time is set here).
    · the selected one gets a frame over the preview: drag it to move, a corner to resize (keeps the picture's shape), the knob
-     above it to turn (Shift: 15° steps). While dragging only the plan's copy changes (no replan per move); letting go replans.
+     above it to turn (Shift: 15° steps). Dragging updates the project and plan (no replan per move); letting go replans, cancelling restores both.
    · スポイト: the next click on the picture in the preview takes the colour under it (from the picture itself, not the
      frame with the lyrics) as the key colour.
    11z_media_ui.js calls J.mediaPlace.init(api, section) and .onPlan(); its list gets a 「前景に置く」 button per picture.
@@ -113,6 +113,7 @@ function rows() {
     sk.addEventListener('change', e => {
       const x = cutById(c.id), v = e.target.value;
       if (v === 'spoid') { select(c.id); startSpoid(); e.target.value = K ? K.color : ''; return; }
+      stopSpoid();
       if (!v) delete x.chroma; else x.chroma = Object.assign({ tol: 0.1, soft: 0.08, spill: 0.6 }, x.chroma, { color: v });
       commit();
     });
@@ -145,6 +146,7 @@ function layout() {
   raf = requestAnimationFrame(layout);                 // follows the playhead and the window while one is selected
 }
 function select(id) {
+  if (id !== sel) stopSpoid();
   sel = id; rowsKey = '';
   if (box) box.hidden = !id;
   if (id && !raf) raf = requestAnimationFrame(layout);
@@ -157,6 +159,7 @@ function setRect(c, R) {
   S.need = true;
 }
 function onDown(e) {
+  if (spoid) return;                          // picking a colour must not also start a placement drag
   const c = sel && cutById(sel); if (!c || e.button !== 0) return;
   const g = geometry(c); if (!g) return;
   e.preventDefault(); e.stopPropagation();
@@ -185,6 +188,7 @@ function onCancel() {
   if (orig) c.rect = orig; else delete c.rect;
   const pc = planCut(c.id); if (pc) pc.rect = orig ? Object.assign({}, orig) : null;
   S.need = true;
+  J.uiApi.flushSave();                       // an autosave may already have kept the intermediate rect
 }
 
 /* ---------- スポイト ---------- */
@@ -207,7 +211,9 @@ M.pickColor = (c, clientX, clientY) => {
   const t = -turn, dx = clientX - cx, dy = clientY - cy;
   const u = (dx * Math.cos(t) - dy * Math.sin(t)) / w + 0.5, v = (dx * Math.sin(t) + dy * Math.cos(t)) / h + 0.5;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-  const src = a.type === 'video' ? (a.live && a.el && a.el.readyState >= 2 ? a.el : a.thumb) : a.source;
+  // The shared video element can hold another cut's time; use the same per-cut frame as the renderer.
+  const vt = a.type === 'video' && pc ? M.videoTimes(P, pc, t0) : null;
+  const src = a.type === 'video' ? (vt ? M.videoFrame(a, vt.main) : a.thumb) : a.source;
   if (!src) return null;
   const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
   const cv = document.createElement('canvas'); cv.width = cv.height = 1;
