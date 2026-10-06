@@ -26,7 +26,7 @@ M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.
 M.AUTO = ['off', 'perLine'];
 M.ORDER = ['sequential', 'random'];
 // how a video clip shorter than its cut fills it (AI clips are 5–10 s, a cut can be a whole verse):
-//   loop: from the start again (with a short cross-fade at the seam when exporting) · pingpong: forwards, then backwards ·
+//   loop: from the start again (with a short cross-fade at the seam in preview and export) · pingpong: forwards, then backwards ·
 //   hold: stop on the last frame · beat: back to the start on every bar (N beats) of the song, looping inside a long bar
 M.EXTEND = ['loop', 'pingpong', 'hold', 'beat'];
 M.RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];

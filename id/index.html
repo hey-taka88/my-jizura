@@ -5180,7 +5180,7 @@ M.LYRIC_BG = ['off', 'over'];             // the per-line background graphic (J.
 M.AUTO = ['off', 'perLine'];
 M.ORDER = ['sequential', 'random'];
 // how a video clip shorter than its cut fills it (AI clips are 5–10 s, a cut can be a whole verse):
-//   loop: from the start again (with a short cross-fade at the seam when exporting) · pingpong: forwards, then backwards ·
+//   loop: from the start again (with a short cross-fade at the seam in preview and export) · pingpong: forwards, then backwards ·
 //   hold: stop on the last frame · beat: back to the start on every bar (N beats) of the song, looping inside a long bar
 M.EXTEND = ['loop', 'pingpong', 'hold', 'beat'];
 M.RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -5996,7 +5996,16 @@ M.syncPreview = (plan, t, playing, redraw) => {
   if (!plan || !plan.media || sampling || performance.now() < exportUntil) return;
   if (previewJob) {
     previewJob.latest = { plan, t, playing, redraw };
-    if (plan !== previewJob.plan || playing !== previewJob.playing || (!playing && t !== previewJob.t)) previewJob.controller.abort();
+    let obsolete = plan !== previewJob.plan || playing !== previewJob.playing || (!playing && t !== previewJob.t);
+    if (!obsolete && playing) {
+      const current = needed(plan, t).out;
+      // Coalesce ordinary progression, but never let a stalled job trail the song by over a second or retain an ended use.
+      obsolete = Math.abs(t - previewJob.t) > 1 || previewJob.shared.some(({ a, uses }) => {
+        const now = current.get(a.id) || [];
+        return now.length !== uses.length || now.some((u, i) => u.c !== uses[i].c || (u.vt.alt != null) !== (uses[i].vt.alt != null));
+      });
+    }
+    if (obsolete) previewJob.controller.abort();
     return;
   }
   for (const a of J.mediaAssets.values()) if (a.type === 'video' && (a.at != null || (a.caps && a.caps.length))) { a.at = null; a.caps = []; }   // export copies are stale now
@@ -6008,7 +6017,7 @@ M.syncPreview = (plan, t, playing, redraw) => {
     if (!a || a.type !== 'video') continue;
     live(a);
     // One element cannot show different clip times at once. Keep a picture for each use, with no extra decoder.
-    if (uses.length > 1 && new Set(uses.flatMap(({ vt }) => vt.alt == null ? [capKey(vt.main)] : [capKey(vt.main), capKey(vt.alt)])).size > 1) {
+    if (new Set(uses.flatMap(({ vt }) => vt.alt == null ? [capKey(vt.main)] : [capKey(vt.main), capKey(vt.alt)])).size > 1) {
       a.previewNeeded = true;
       const key = uses.map(({ c, vt }) => [c.id, capKey(vt.main), vt.alt == null ? null : capKey(vt.alt)].join(':')).join('|');
       if (!a.preview || a.preview.plan !== plan || a.preview.key !== key) shared.push({ a, uses, key });
@@ -6078,7 +6087,7 @@ const capKey = time => Math.round(time * 1000);
 let frameQueue = Promise.resolve();
 // Double-buffer the copied pictures: a seek must not change a frame the renderer is still using.
 function queuePreview(plan, t, playing, shared, redraw) {
-  const job = previewJob = { plan, t, playing, latest: null, controller: new AbortController() };
+  const job = previewJob = { plan, t, playing, shared, latest: null, controller: new AbortController() };
   const signal = job.controller.signal;
   const prepared = frameQueue.then(async () => {
     if (signal.aborted || sampling || performance.now() < exportUntil) return;

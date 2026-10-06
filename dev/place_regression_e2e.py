@@ -201,6 +201,30 @@ async def main():
             await ev('() => {window.restorePreviewFrame();delete window.restorePreviewFrame;}')
             ok(latest_ms<1000 and abs(latest[0][0]-80)<4 and abs(latest[1][0]-130)<4,
                f'a new scrub interrupts obsolete shared-video decoding ({latest}, {latest_ms:.0f}ms)')
+            await ev('() => {J.ui.project.media.tracks.front.cuts[1].start=10;J.uiApi.replan();J.uiApi.seek(3.88);}')
+            solo_seam=await preview_ready([90,0])
+            ok(abs(solo_seam[0][0]-90)<4,f'a single preview cut blends both loop-seam frames {solo_seam}')
+            await ev('() => {J.ui.project.media.tracks.front.cuts[1].start=0;J.uiApi.replan();}')
+            for leave_overlap in (False,True):
+                await ev('(leave) => {J.ui.project.media.tracks.front.cuts[1].end=leave?2.2:14;J.uiApi.replan();J.uiApi.seek(.5);}',leave_overlap)
+                await preview_ready([30,80])
+                await ev("""() => {
+                  const a=J.mediaAssets.get(J.ui.plan.media.front.cuts[0].assetId),Real=window.VideoFrame;
+                  const before=new Real(a.el),staleTS=before.timestamp;before.close();window.previewPolls=0;
+                  window.restorePreviewFrame=()=>{window.VideoFrame=Real;};
+                  window.VideoFrame=function(src,...args){
+                    if(src===a.el&&a.el.currentTime>=1.9&&a.el.currentTime<2.1){window.previewPolls++;return {timestamp:staleTS,duration:33333,close(){}};}
+                    return new Real(src,...args);
+                  };J.uiApi.seek(1.9);document.getElementById('btnPlay').click();
+                }""")
+                await pg.wait_for_function('() => window.previewPolls>2')
+                await pg.wait_for_function('(t) => J.ui.t>t',arg=2.5 if leave_overlap else 3.3)
+                moved=await ev('() => ({t:J.ui.t,rgb:previewRGB()})')
+                expected=[130,0] if leave_overlap else [180,80]
+                ok(all(abs(moved['rgb'][i][0]-red)<4 for i,red in enumerate(expected)),
+                   f'playback discards stalled frames (left overlap: {leave_overlap}) {moved}')
+                await ev('() => {J.uiApi.pause();window.restorePreviewFrame();delete window.restorePreviewFrame;J.uiApi.seek(.5);}')
+            await ev('() => {J.ui.project.media.tracks.front.cuts[1].end=14;J.uiApi.replan();}')
             await ev('() => J.uiApi.seek(2)');await preview_ready([130,180])
             ok(await ev('() => J.media.liveVideos()')==3,'fixture fills the three-video decoder budget')
             await pg.locator('#mediaFront .key').nth(1).select_option('spoid')
