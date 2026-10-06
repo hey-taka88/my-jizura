@@ -55,6 +55,7 @@ def near(a, b, tol=45): return all(abs(int(x) - int(y)) <= tol for x, y in zip(a
 def make(d):
     os.makedirs(d, exist_ok=True)
     Image.new('RGB', (1280, 720), BLUE).save(os.path.join(d, 'blue.png'))
+    Image.new('RGB', (100, 100), (0, 220, 255)).save(os.path.join(d, 'logo.png'))
     im = Image.new('RGBA', (300, 600), (0, 0, 0, 0)); ImageDraw.Draw(im).rectangle([100, 150, 199, 599], fill=MAG + (255,)); im.save(os.path.join(d, 'figure.png'))
     bs = Image.new('RGB', (400, 600), BSCREEN); ImageDraw.Draw(bs).rectangle([150, 200, 249, 599], fill=MAG); bs.save(os.path.join(d, 'bluescreen.png'))
     ph = Image.new('RGB', (400, 300)); dr = ImageDraw.Draw(ph)                    # a photo-like picture: no screen round its edge
@@ -71,12 +72,16 @@ async def main():
         lyr = '\n'.join(f'[00:{1 + 4 * i:02d}.00]{t}' for i, t in enumerate(['夜明けの色を覚えてる', 'ほどけた声が遠くで鳴った', '手を離す', 'ねえ、まだ間に合うかな', '名前のない明日へ', 'おわり']))
         await jz.new_project(lyrics=lyr); await jz.set_look(seed=3)
         await jz.add_media([os.path.join(pics, 'blue.png')])                           # the automatic background: blue under every line
+        await jz.add_media([os.path.join(pics, 'logo.png')])
+        logo = (await jz.add_timed_media('logo.png', 0, track='front', x=-0.4, y=-0.4, size=0.1))['id']   # a logo placed in 詳細
+        LOGO = "(id) => JSON.stringify(J.ui.project.media.tracks.front.cuts.find(c => c.id === id))"
+        logo0 = await ev(LOGO, logo)
         clip = os.path.join(tmp, 'dance_gb.mp4')
         with open(clip, 'wb') as f: f.write(base64.b64decode(await ev(MAKE, [2])))
         print('the section')
         await pg.click('#modeEasy')
         vis = await ev("() => { const s = document.getElementById('easyDance'); return !!s && s.offsetParent !== null && /ダンス動画/.test(s.textContent) && !!s.querySelector('.dz-file'); }")
-        ok(vis, 'かんたん shows 「ダンス動画を重ねる」 with a button to choose a clip')
+        ok(vis, 'かんたん shows 「ダンス動画を重ねる」 with a button to choose a clip (a logo placed in 詳細 is not its dancer)')
         plan0 = await ev("() => JSON.stringify(J.ui.plan.cuts.map(c => [c.start, c.layout]))")
         print('a green-screen clip')
         await pg.set_input_files('#easyDance .dz-file', clip)
@@ -123,6 +128,7 @@ async def main():
         await jz.set_output(aspect='16:9')
         R = (await ev("() => J.mediaEasy.dancer()"))['rect']; h = R['w'] * 1920 * 320 / (180 * 1080)
         ok(abs(h - 0.6) < 0.01 and abs(R['y'] + h / 2 - 0.5) < 0.003, f'and back to 16:9 ({R}, height {h:.3f})')
+        ok(await ev(LOGO, logo) == logo0, 'the logo placed in 詳細 keeps its own rect through both')
         print('replace, and what is found')
         BACK = "() => J.ui.plan.media.back.cuts.map(c => c.assetId)"
         found = await ev("""(did) => {
@@ -141,7 +147,7 @@ async def main():
            f'差し替え with a transparent PNG: same place and height, no key ({R})')
         names = await ev("() => J.ui.project.media.assets.map(a => a.name)")
         back = await ev(BACK)
-        ok(len(await ev("() => J.ui.project.media.tracks.front.cuts")) == 1 and names == ['blue.png', 'figure.png'] and did not in back and back,
+        ok(len(await ev("() => J.ui.project.media.tracks.front.cuts")) == 2 and names == ['blue.png', 'logo.png', 'figure.png'] and did not in back and back,
            f'still one picture over the lyrics; the green clip it replaced leaves the list and never becomes a background ({names}, back {back})')
         await jz.add_media([os.path.join(pics, 'bluescreen.png'), os.path.join(pics, 'photo.png')])
         ids = await ev("() => Object.fromEntries(J.ui.project.media.assets.map(a => [a.name, a.id]))")
@@ -158,7 +164,7 @@ async def main():
         await pg.click('#easyDance .dz-del')
         left = await ev("() => ({ front: J.ui.project.media.tracks.front.cuts.length, assets: J.ui.project.media.assets.map(a => a.name), pick: /動画を選ぶ/.test(document.getElementById('easyDance').textContent) })")
         back = await ev(BACK)
-        ok(left == {'front': 0, 'assets': ['blue.png'], 'pick': True} and set(back) == {ids['blue.png']},
+        ok(left == {'front': 1, 'assets': ['blue.png', 'logo.png'], 'pick': True} and set(back) == {ids['blue.png']} and await ev(LOGO, logo) == logo0,
            f'✕ takes it off, the clips it used leave the list (no stray background), the button comes back ({left}, back {back})')
         print('a clip already in the list')
         await jz.add_media([clip])                                                      # the green clip as one of the pictures
@@ -175,11 +181,19 @@ async def main():
         await pg.set_input_files('#easyDance .dz-file', again)
         await pg.wait_for_function("(id) => J.mediaEasy.dancer().assetId === id", arg=did, timeout=15000)
         n = await ev("() => J.ui.project.media.assets.map(a => a.name)")
-        ok(n == ['blue.png', 'dance_gb.mp4'], f"the same clip under another name uses the one in the list ({n})")
+        ok(n == ['blue.png', 'logo.png', 'dance_gb.mp4'], f"the same clip under another name uses the one in the list ({n})")
         await ev("() => J.mediaEasy.remove()")
         await ev("() => { const el = document.getElementById('eCenter'); el.checked = false; el.dispatchEvent(new Event('change')); }")
         plan1 = await ev("() => JSON.stringify(J.ui.plan.cuts.map(c => [c.start, c.layout]))")
         ok(plan0 == plan1, 'without it (and 中央を空ける off again) the lyrics are planned as before')
+        print('another project opened while a clip loads')
+        await ev("""() => { const orig = J.mediaUI.addFiles; let go; window.__gate = new Promise(r => { go = r; }); window.__go = go;
+          J.mediaUI.addFiles = async files => { J.mediaUI.addFiles = orig; const r = await orig(files); await window.__gate; return r; };
+          window.__late = J.mediaEasy.add([new File([new Uint8Array(64)], 'late.png', { type: 'image/png' })]); }""")
+        await jz.new_project(lyrics=lyr)
+        await jz.add_media([os.path.join(pics, 'photo.png')])
+        r = await ev("async () => { window.__go(); const id = await window.__late; return { id, front: J.ui.project.media.tracks.front.cuts.length, assets: J.ui.project.media.assets.map(a => a.name) }; }")
+        ok(r == {'id': None, 'front': 0, 'assets': ['photo.png']}, f'the late result is dropped: the project opened meanwhile is untouched ({r})')
         errs = list(jz.errors)
         ok(not errs, f'no page errors ({errs[:3]})')
     print('\n' + ('ALL OK' if not fails else f'{len(fails)} FAILED'))

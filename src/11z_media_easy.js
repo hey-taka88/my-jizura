@@ -5,7 +5,7 @@
    · its background is taken out by itself: a clip with transparency (WebM with alpha, a PNG) stays as it is, a green / blue screen
      gets クロマキー 'auto'; anything else is put over as it is (the key can be chosen by hand)
    · 位置 (左 / 中央 / 右), 大きさ, 背景, and 「歌詞を左右に分ける」 (the app's 中央を空ける); the frame over the preview moves it finely
-   · the panel works on the last picture placed over the lyrics for the whole song or a time (any of them, also one placed in 詳細)
+   · the panel works on the last front cut it placed itself (role 'dancer', kept in the project); pictures placed in 詳細 stay as they are
    11z_media_ui.js calls J.mediaEasy.init(api) and .onPlan(); nothing of the upstream files changes.
    ============================================================ */
 (() => {
@@ -40,8 +40,8 @@ const CSS = `
 
 const media = () => S.project.media;
 const front = () => media().tracks.front;
-// the one this panel works on: the last picture placed over the lyrics for a time of the song (not one chosen for a lyric line)
-const dancer = () => front().cuts.filter(c => !c.lineRef).pop() || null;
+// the one this panel works on: the last front cut it placed (a logo placed in 詳細 is never resized or replaced from here)
+const dancer = () => front().cuts.filter(c => !c.lineRef && c.role === 'dancer').pop() || null;
 const metaOf = c => (c ? M.assetById(S.project, c.assetId) : null);
 const frameSize = () => (S.plan ? { W: S.plan.W, H: S.plan.H } : { W: 1920, H: 1080 });
 
@@ -143,6 +143,7 @@ function use(assetId) {
     const id = J.mediaPlace.place(assetId);
     c = id && cutNow(id);
     if (!c) return null;
+    c.role = 'dancer';
     c.rect = rectFor(meta, 'center', SIZE, 0.5, 0);
   }
   if (d.kind === 'green' || d.kind === 'blue') c.chroma = Object.assign({}, KEY, { color: 'auto' });
@@ -163,12 +164,14 @@ async function add(files) {
   if (!f || busy) return null;
   busy = true; render();
   try {
-    const before = new Set(media().assets.map(a => a.id));
+    const project = S.project, before = new Set(media().assets.map(a => a.id));
     const res = await J.mediaUI.addFiles([f]);
+    if (S.project !== project) return null;          // another project was opened meanwhile: this result is not for it
     const m = media();
     let a = m.assets.find(x => !before.has(x.id));
     // nothing new and nothing wrong: the same clip is already in the list (its id is the hash of its bytes; a name proves nothing)
     if (!a && res && !res.added.length && !res.errors.length && !res.skipped.length && M.hashBytes) { const id = await M.hashBytes(await f.arrayBuffer()); a = m.assets.find(x => x.id === id); }
+    if (S.project !== project) return null;
     if (!a || !J.mediaAssets.has(a.id)) {
       const vbad = res && res.errors && res.errors.some(e => e.reason === 'video');
       api.toast(vbad ? L('この動画はこのブラウザで再生できませんでした。H.264 の MP4 か WebM に変換してください', 'This browser cannot play this clip. Convert it to H.264 MP4 or WebM.')
