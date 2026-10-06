@@ -39,7 +39,19 @@ MEDIAN = r"""async ([src, t]) => {   // src: 'render' (the app's renderer at son
   const c = document.createElement('canvas'); c.width = 96; c.height = 54; const x = c.getContext('2d');
   if (src === 'render') new J.Renderer().frame(x, J.ui.plan, t, { scale: 96 / J.ui.plan.W });
   else { const v = window.__ev || (window.__ev = document.createElement('video')); if (v.src !== src) { v.muted = true; v.src = src; await new Promise(r => { v.onloadeddata = r; }); }
-         v.currentTime = t; await new Promise(r => { v.onseeked = r; }); x.drawImage(v, 0, 0, 96, 54); }
+         // Wait for the requested export frame to be presented (within one output frame), not just a seek event.
+         const frame = new Promise((resolve, reject) => {
+           let cb = 0;
+           const timer = setTimeout(() => { v.cancelVideoFrameCallback(cb); reject(new Error('frame not presented: ' + JSON.stringify(window.__lastVideoRead))); }, 10000);
+           const ready = (now, meta) => {
+             window.__lastVideoRead = { requested: t, mediaTime: meta.mediaTime, currentTime: v.currentTime, readyState: v.readyState };
+             if (Math.abs(meta.mediaTime - t) > 1 / J.ui.plan.fps + .005) { cb = v.requestVideoFrameCallback(ready); return; }
+             clearTimeout(timer); resolve();
+           };
+           cb = v.requestVideoFrameCallback(ready);
+         });
+         const sought = new Promise(r => { v.onseeked = r; }); v.currentTime = t;
+         await Promise.all([sought, frame]); x.drawImage(v, 0, 0, 96, 54); }
   const d = x.getImageData(0, 0, 96, 54).data, ch = [[], [], []];
   for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
   return ch.map(a => { a.sort((p, q) => p - q); return a[a.length >> 1]; });
@@ -116,9 +128,21 @@ async def main():
                 ok(not bad, f'{mode}: exported frames follow the clip time (worst error {worst:.3f}s) {bad[:3]}')
             # the loop seam: frames inside the last 0.3 s of a pass mix the end and the start of the clip
             await pg.evaluate("() => { J.ui.project.media.autoFill.back.video = { extend: 'loop', rate: 1, beats: 4 }; J.uiApi.replan(); }")
+            # Alternate end/start seeks repeatedly; inspect capture pixels before encoding to distinguish capture and readback failures.
+            captures = await pg.evaluate("""async () => {
+              const P=J.ui.plan,out=[],cv=document.createElement('canvas');cv.width=cv.height=1;const x=cv.getContext('2d');
+              for(let pass=0;pass<4;pass++) for(const t of [3.72,3.80,3.88]) {
+                await J.media.prepareFrame(P,t);const c=J.media.cutAt(P,t,'back'),a=J.mediaAssets.get(c.assetId),vt=J.media.videoTimes(P,c,t);
+                const red=time=>{const src=J.media.videoCap(a,time);if(!src)return null;x.drawImage(src,0,0,1,1);return x.getImageData(0,0,1,1).data[0];};
+                out.push({t,main:red(vt.main),alt:red(vt.alt),k:vt.k});
+              }return out;
+            }""")
+            bad=[c for c in captures if c['main'] is None or c['alt'] is None or abs(c['main']-180)>3 or abs(c['alt']-30)>3]
+            ok(not bad, f'loop seam prepares both distinct source frames across 12 alternating seeks {bad[:3]}')
             res = await pg.evaluate("""async () => { const S = J.ui; const r = await J.exportMP4({ plan: S.plan, project: Object.assign({}, S.project, { res: 720, includeAudio: false }), audio: null, quality: 'normal', range: { t0: 3.5, t1: 4.5 } }); return URL.createObjectURL(r.blob); }""")
             m = await pg.evaluate(MEDIAN, [res, 0.38])                # song 3.88 s: end of the clip (3.88) with the start (0.18) fading in at 60 %
-            ok(80 < m[0] < 175, f'the loop seam is a cross-fade, not a jump (red {m[0]} between the end and the start of the clip)')
+            readback=await pg.evaluate('() => window.__lastVideoRead')
+            ok(80 < m[0] < 175, f'the loop seam is a cross-fade, not a jump (red {m[0]} between the end and the start of the clip; decoded {readback})')
             print('a clip placed at a time (under the whole song, on the song clock)')
             await pg.evaluate("""() => { const S = J.ui, m = S.project.media, ids = m.assets.map(a => a.id);
               m.autoFill.back.video = { extend: 'loop', rate: 1, beats: 4 };
