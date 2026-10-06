@@ -117,6 +117,7 @@ M.syncPreview = (plan, t, playing, redraw) => {
     const a = J.mediaAssets.get(id);
     if (!a || a.type !== 'video') continue;
     live(a);
+    recoveredPresentation(a.el); // observe normal preview progress before a loop can revisit the failed timestamp
     // One element cannot show different clip times at once. Keep a picture for each use, with no extra decoder.
     if (new Set(uses.flatMap(({ vt }) => vt.alt == null ? [capKey(vt.main)] : [capKey(vt.main), capKey(vt.alt)])).size > 1) {
       a.previewNeeded = true;
@@ -156,15 +157,18 @@ function shown(el) {
   if (typeof VideoFrame !== 'function' || el.readyState < 2) return null;
   try { const f = new VideoFrame(el), r = { ts: f.timestamp / 1e6, dur: (f.duration || 0) / 1e6 }; f.close(); return r; } catch (e) { return null; }
 }
+function recoveredPresentation(el) {
+  if (el.frameCheckFailedAt == null) return true;
+  const frame = shown(el);
+  if (!frame || Math.abs(frame.ts - el.frameCheckFailedAt) < 1e-6) return false;
+  delete el.frameCheckFailedAt;
+  return true;
+}
 /* export: every clip needed for the frame at t is at its exact time before the frame is drawn */
 async function seekExact(el, time, signal) {
   if (el.readyState < 1) await once(el, 'loadedmetadata', 20000, signal);
   if (signal && signal.aborted) throw new Error('aborted');
-  if (el.frameCheckFailedAt != null) {
-    const frame = shown(el);
-    if (!frame || Math.abs(frame.ts - el.frameCheckFailedAt) < 1e-6) throw new Error('video presentation is still stalled');
-    delete el.frameCheckFailedAt; // presentation advanced since the timeout: exact reads can be tried again
-  }
+  if (!recoveredPresentation(el)) throw new Error('video presentation is still stalled');
   const tt = J.clamp(time, 0, Math.max(0, el.duration - 1 / 240));
   if (!el.paused) el.pause();
   const atTarget = Math.abs(el.currentTime - tt) < 1e-4 && el.readyState >= 2 && !el.seeking;

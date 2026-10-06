@@ -393,18 +393,27 @@ async def main():
                 // The same unchanged presentation must fail immediately; do not briefly restore real metadata here.
                 const t0=performance.now(),retry=await J.media.prepareCut(P,c,1.5);
                 const after={ms:performance.now()-t0,cap:!!J.media.videoCap(a,retry.main)};
+                // Normal preview presents a later frame, then a full loop reaches the former timeout timestamp again.
+                const single={...P,media:{...P.media,front:{...P.media.front,cuts:[c]}}};
+                window.VideoFrame=class{constructor(){this.timestamp=.5e6;this.duration=33333;}close(){}};
+                J.media.syncPreview(single,.5,false);
+                window.VideoFrame=class{constructor(){this.timestamp=3e6;this.duration=33333;}close(){}};
+                const looped=await J.media.prepareCut(P,c,3.02);
+                const loop_recovered={cap:!!J.media.videoCap(a,looped.main),failedAt:a.el.frameCheckFailedAt??null};
                 window.VideoFrame=Real;
                 const fresh=await J.media.prepareCut(P,c,1.5),src=J.media.videoCap(a,fresh.main);
                 const cv=document.createElement('canvas');cv.width=cv.height=1;
                 if(src)cv.getContext('2d').drawImage(src,0,0,1,1);
                 const recovered={cap:!!src,red:cv.getContext('2d').getImageData(0,0,1,1).data[0]};
-                return {timed_out,after,recovered};
+                return {timed_out,after,loop_recovered,recovered};
               } finally {window.VideoFrame=Real;restoreClock();J.media.releaseVideos();S.exporting=exporting;}
             }""")
             timed_out,after,recovered=(faults[k] for k in ('timed_out','after','recovered'))
             ok(not timed_out['cap'] and not timed_out['frame'] and timed_out['at'] is None,
                f'a timed-out frame is neither captured nor drawn as the requested time {timed_out}')
             ok(after['ms']<500 and not after['cap'],f'a repeated presentation failure returns quickly without a stale capture {after}')
+            ok(faults['loop_recovered']['cap'] and faults['loop_recovered']['failedAt'] is None,
+               f'preview progress clears a timeout even after looping to its timestamp {faults["loop_recovered"]}')
             ok(recovered['cap'] and abs(recovered['red']-80)<4,f'frame capture recovers once presentation advances {recovered}')
             # An older seek event may already be queued when a new seek starts. It must not complete the new request.
             seek_state=await ev("""async () => {
