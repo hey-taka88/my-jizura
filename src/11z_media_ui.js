@@ -27,6 +27,9 @@ const CSS = `
 .media-list .acts { position: absolute; right: 2px; top: 2px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .media-list li:hover .acts, .media-list li:focus-within .acts, #app.is-mobile .media-list .acts { opacity: 1; }
 .media-list .acts button { padding: 1px 5px; font-size: 11px; line-height: 1.3; background: rgba(0,0,0,0.65); border-color: transparent; }
+/* スマホ: the app hides its header's .acts on a phone (#app.is-mobile .acts) — the buttons of a picture stay, big enough for a finger */
+#app.is-mobile .media-list .acts { display: flex; gap: 4px; }
+#app.is-mobile .media-list .acts button { min-height: 30px; min-width: 30px; padding: 2px 6px; font-size: 13px; }
 .media-list li.missing canvas { opacity: 0.35; }
 .media-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .media-opts label.field { font-size: 11px; }

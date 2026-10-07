@@ -38,6 +38,19 @@ const CSS = `
 .media-box i.rot { left: calc(50% - 6px); top: -28px; border-radius: 50%; cursor: grab; }
 .media-box i.rot::after { content: ''; position: absolute; left: 4px; top: 10px; width: 1px; height: 16px; background: #3cc8e6; }
 .viewport.media-spoid, .viewport.media-spoid canvas { cursor: crosshair; }
+/* a finger needs bigger handles (a phone, or スマホ mode) */
+#app.is-mobile .media-box i { width: 22px; height: 22px; }
+#app.is-mobile .media-box i.nw { left: -12px; top: -12px; } #app.is-mobile .media-box i.ne { right: -12px; top: -12px; }
+#app.is-mobile .media-box i.sw { left: -12px; bottom: -12px; } #app.is-mobile .media-box i.se { right: -12px; bottom: -12px; }
+#app.is-mobile .media-box i.rot { left: calc(50% - 12px); top: -44px; }
+#app.is-mobile .media-box i.rot::after { left: 10px; top: 22px; height: 22px; }
+@media (pointer: coarse) {
+  .media-box i { width: 22px; height: 22px; }
+  .media-box i.nw { left: -12px; top: -12px; } .media-box i.ne { right: -12px; top: -12px; }
+  .media-box i.sw { left: -12px; bottom: -12px; } .media-box i.se { right: -12px; bottom: -12px; }
+  .media-box i.rot { left: calc(50% - 12px); top: -44px; }
+  .media-box i.rot::after { left: 10px; top: 22px; height: 22px; }
+}
 `;
 
 const media = () => S.project.media;

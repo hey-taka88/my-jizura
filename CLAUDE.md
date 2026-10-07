@@ -74,7 +74,7 @@ node tools/export_ae_data.js && python3 build_ae.py   # AE パネルを触った
 - **ゴーストパス**：`env.pass !== 'main'` のときにメディアを描かない。
 - **透過 PNG の前景／後景分割**（`opt.layer`）と **keyBg（グリーン／ブラックバック）** の両方で正しく動くこと（keyBg 中はメディアを描かない）。
 - **UI 文字列は日本語**（本家に合わせる）。英語版は `app/english.py` の対応表に足す。他言語版が `tools/check_i18n.py` で警告しても、自分用なので日本語のままで可。
-- **CHANGELOG.md** の先頭「フォーク（my-jizura）」節に書く。本家の節は触らない。`VERSION` は本家のまま（フォーク版は `VERSION` に `+media.N` を付ける案は Phase 4 で決める）。
+- **CHANGELOG.md** の先頭「フォーク（my-jizura）」節に書く。本家の節は触らない。`VERSION` は本家のまま（2026-10-07 に決定：フォークの変更は CHANGELOG に日付で記録し、版番号は付けない。本家の更新を取り込むときに番号がぶつからないように）。
 - **ビルド成果物（index.html 等）もコミットする**（本家と同じ運用。Pages が直接配信）。ただし PR の diff を読むときは `src/` `app/` だけを見る。
 
 ## PR の完了条件（毎回）

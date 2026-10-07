@@ -7,7 +7,7 @@ usage: python3 build.py && python3 dev/easy_dance_e2e.py [--browser chromium]
   the bottom · 差し替え with a transparent PNG keeps its place and drops the key, the clip it replaced leaves the list (never a
   background, also when it is taken off in 詳細's list) · what is found: alpha (also a clip's thumbnail with transparency), green, blue, plain · ✕ takes it off (its clips stay in
   the list, marked, never a background) · a clip read while another project was opened is dropped and not kept · a broken file named like a clip in the list is refused · the same clip under another name is the one in the
-  list · the same project gives the same plan.
+  list · the same project gives the same plan · スマホ: a picture's buttons show and work, the frame's handles are big enough.
 Exit code 0 = all checks passed."""
 import asyncio, base64, os, sys, tempfile
 from PIL import Image, ImageDraw
@@ -217,6 +217,15 @@ async def main():
             if not late['live'] and not late['stored']: break
             await pg.wait_for_timeout(200)
         ok(late['id'] and not late['live'] and not late['stored'], f'and the picture read for the closed project is not kept in this browser ({late})')
+        print('スマホ')
+        await pg.set_viewport_size({'width': 390, 'height': 844})
+        await pg.evaluate("() => document.getElementById('modeMobile').click()"); await pg.wait_for_timeout(300)
+        acts = await ev("() => [...document.querySelectorAll('#mediaList .acts')].map(a => getComputedStyle(a).display !== 'none' && a.getBoundingClientRect().width > 0)")
+        ok(acts and all(acts), f"a picture's buttons (前 / ← / ✕) show on a phone too ({acts})")
+        await pg.click('#mediaList li .acts .fr')
+        n = await ev("() => J.ui.project.media.tracks.front.cuts.length")
+        hs = await ev("() => { const i = document.querySelector('#mediaBox i.se').getBoundingClientRect(); return [i.width, i.height]; }")
+        ok(n == 1 and min(hs) >= 22, f'「前」 with a finger puts it over the lyrics, its frame has handles for a finger ({n} front, handle {hs})')
         errs = list(jz.errors)
         ok(not errs, f'no page errors ({errs[:3]})')
     print('\n' + ('ALL OK' if not fails else f'{len(fails)} FAILED'))
