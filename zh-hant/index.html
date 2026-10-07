@@ -38151,6 +38151,7 @@ J.mediaEasy = {
     sec.innerHTML = `<h3>${L('ダンス動画を重ねる', 'A dance clip over the lyrics')}<small>${L('お試し', 'trial')}</small></h3><div class="dz-body"></div>`;
     const before = out && out.closest('.easy-sec');
     if (before && before.parentNode === panel) panel.insertBefore(sec, before); else panel.appendChild(sec);
+    follow();                                        // the frame the saved rect is for (the first replan of boot ran before this)
     render();
   },
   onPlan() { if (api && !follow()) render(); },

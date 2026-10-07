@@ -129,6 +129,14 @@ async def main():
         R = (await ev("() => J.mediaEasy.dancer()"))['rect']; h = R['w'] * 1920 * 320 / (180 * 1080)
         ok(abs(h - 0.6) < 0.01 and abs(R['y'] + h / 2 - 0.5) < 0.003, f'and back to 16:9 ({R}, height {h:.3f})')
         ok(await ev(LOGO, logo) == logo0, 'the logo placed in 詳細 keeps its own rect through both')
+        await ev("() => J.uiApi.flushSave()")
+        await pg.reload(); await pg.wait_for_function("(id) => window.J && J.ui && J.ui.plan && J.mediaEasy && J.mediaAssets.has(id)", arg=did, timeout=30000)
+        await ev("""() => { const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.id = 'jzDriverFiles';
+          i.style.display = 'none'; document.body.appendChild(i); }""")                   # the driver's file field (as Jizura.start)
+        await jz.set_output(aspect='9:16')                                               # the first change after a reload
+        R = (await ev("() => J.mediaEasy.dancer()"))['rect']; h = R['w'] * 1080 * 320 / (180 * 1920)
+        ok(abs(h - 0.6) < 0.01 and abs(R['y'] + h / 2 - 0.5) < 0.003, f'after a reload, the first 9:16 keeps it too ({R}, height {h:.3f})')
+        await jz.set_output(aspect='16:9')
         print('replace, and what is found')
         BACK = "() => J.ui.plan.media.back.cuts.map(c => c.assetId)"
         found = await ev("""(did) => {
