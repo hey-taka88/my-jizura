@@ -60,6 +60,7 @@ function asset(a) {
   if (!isObj(a) || !M.ID.test(a.id) || !M.TYPES.includes(a.type)) return null;
   const o = { id: a.id, name: str(a.name, 160) || a.id, type: a.type, w: int(a.w, 1, 32768, 1), h: int(a.h, 1, 32768, 1), size: int(a.size, 0, 2 ** 40, 0) };
   if (a.type === 'video') o.duration = num(a.duration, 0, 86400, 0);
+  if (a.role === 'dancer') o.role = 'dancer';            // used by かんたん「ダンス動画を重ねる」: never an automatic background
   return o;
 }
 function cut(c) {
@@ -85,6 +86,7 @@ function cut(c) {
   if (isObj(c.chroma)) o.chroma = { color: /^#[0-9a-f]{6}$/i.test(c.chroma.color) ? c.chroma.color.toLowerCase() : 'auto',
     tol: num(c.chroma.tol, 0, 0.6, 0.1), soft: num(c.chroma.soft, 0, 0.6, 0.08), spill: num(c.chroma.spill, 0, 1, 0.6) };
   if (isObj(c.video)) o.video = video(c.video, null);   // per-cut clip settings (no editor yet; Phase 3)
+  if (c.role === 'dancer') o.role = 'dancer';            // placed by かんたん「ダンス動画を重ねる」 (11z_media_easy.js): its panel works on it
   return o;
 }
 /* video clip settings: start / end inside the clip (s), how it fills the cut, speed, bar length in beats; null d = keep only what is set */
